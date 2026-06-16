@@ -1,1 +1,4 @@
-dataset/
+datasets/
+results/
+runs/
+__pycache__/
