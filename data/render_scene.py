@@ -66,10 +66,32 @@ def generate_camera_grid(step_z=10, step_x=10, radius=1.0):
     return grid
 
 
-def render_views(scene, step_z=10, step_x=10, radius=2.0, resolution=128, output_dir="dataset"):
+def compute_intrinsic_matrix(yfov, resolution):
+    """Compute camera intrinsic matrix from field of view and resolution."""
+    fy = resolution / (2.0 * np.tan(yfov / 2.0))
+    fx = fy  # Assuming square pixels
+    cx = resolution / 2.0
+    cy = resolution / 2.0
+    K = np.array([
+        [fx, 0.0, cx],
+        [0.0, fy, cy],
+        [0.0, 0.0, 1.0]
+    ], dtype=np.float32)
+    return K
+
+
+def render_views(scene, step_z=10, step_x=10, radius=2.0, resolution=128, output_dir="datasets"):
     os.makedirs(output_dir, exist_ok=True)
     renderer = pyrender.OffscreenRenderer(viewport_width=resolution, viewport_height=resolution)
     camera = pyrender.PerspectiveCamera(yfov=np.pi / 3.0)
+
+    # Compute and save intrinsic matrix
+    K = compute_intrinsic_matrix(np.pi / 3.0, resolution)
+    intrinsic_path = os.path.join(output_dir, "intrinsics.csv")
+    with open(intrinsic_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        for row in K:
+            writer.writerow(row)
 
     camera_grid = generate_camera_grid(step_z=step_z, step_x=step_x, radius=radius)
     for iz, ix, cam_pos, cam_up in camera_grid:
@@ -96,10 +118,18 @@ def generate_random_cameras(num_views=100, radius=1.0):
     return cams
 
 
-def render_views_random(scene, num_views=100, radius=2.0, resolution=128, output_dir="dataset", csv_path=None):
+def render_views_random(scene, num_views=100, radius=2.0, resolution=128, output_dir="datasets", csv_path=None):
     os.makedirs(output_dir, exist_ok=True)
     renderer = pyrender.OffscreenRenderer(viewport_width=resolution, viewport_height=resolution)
     camera = pyrender.PerspectiveCamera(yfov=np.pi / 3.0)
+
+    # Compute and save intrinsic matrix
+    K = compute_intrinsic_matrix(np.pi / 3.0, resolution)
+    intrinsic_path = os.path.join(output_dir, "intrinsics.csv")
+    with open(intrinsic_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        for row in K:
+            writer.writerow(row)
 
     camera_list = generate_random_cameras(num_views=num_views, radius=radius)
     records = []
