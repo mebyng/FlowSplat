@@ -19,7 +19,8 @@ class FlowMatching(nn.Module):
         curr = input
         for i in range(num_steps):
             t = torch.full((input.size(0), 1), i * dt, device=input.device)
-            curr = curr + self.model(curr, plucker, t) * dt
+            inp = torch.cat([curr, plucker], dim=1)
+            curr = curr + self.model(inp, t) * dt
         return curr
 
     def train_step(self, input: torch.Tensor, plucker: torch.Tensor, target: torch.Tensor, criterion: nn.Module):
@@ -42,9 +43,10 @@ class FlowMatching(nn.Module):
 class DebugRegression(nn.Module):
     """Simple Regression model."""
 
-    def __init__(self, model: nn.Module):
+    def __init__(self, model: nn.Module, mode: str = "rotate"):
         super().__init__()
         self.model = model
+        self.mode = mode
 
     def device(self):
         """Return the device of the model parameters."""
@@ -52,12 +54,27 @@ class DebugRegression(nn.Module):
 
     def generate(self, input: torch.Tensor, plucker: torch.Tensor, num_steps: int = 10) -> torch.Tensor:
         """Forward pass through the regression model."""
-        return self.model(plucker)
+
+        if self.mode == "rotate":
+            input = torch.cat([input, plucker], dim=1)  # Concatenate input and target images for rotation mode
+        elif self.mode == "generate":
+            input = plucker  # Use Plucker coordinates directly for generation mode
+        else:
+            raise ValueError(f"Invalid mode: {self.mode}")
+        
+        return self.model(input)
 
     def train_step(self, input: torch.Tensor, plucker: torch.Tensor, target: torch.Tensor, criterion: nn.Module):
         """Perform a single training step."""
         self.train()
 
-        pred = self.model(plucker)
+        if self.mode == "rotate":
+            input = torch.cat([input, plucker], dim=1)  # Concatenate input and target images for rotation mode
+        elif self.mode == "generate":
+            input = plucker  # Use Plucker coordinates directly for generation mode
+        else:
+            raise ValueError(f"Invalid mode: {self.mode}")
+
+        pred = self.model(input)
         loss = criterion(pred, target)
         return loss

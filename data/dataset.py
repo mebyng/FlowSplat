@@ -7,18 +7,20 @@ import numpy as np
 import torch
 from PIL import Image
 from torch.utils.data import Dataset
+from utils.camera_utils import default_align_cameras
 
 import csv
 
 
 
 class ViewDataset(Dataset):
-    def __init__(self, root, split="training", mode="rotate", transform=None, target_transform=None):
+    def __init__(self, root, split="training", mode="rotate", transform=None, target_transform=None, random_matching=True):
         self.root = Path(root) / split
         self.transform = transform
         self.target_transform = target_transform
         self.split = split
         self.mode = mode
+        self.random_matching = random_matching
         self.samples = []
         self.scene_info = {}
         self.scene_intrinsics = {}
@@ -87,7 +89,7 @@ class ViewDataset(Dataset):
         input_pose, intrinsics = torch.from_numpy(input_pose), torch.from_numpy(intrinsics)
 
         # choose target depending on split
-        if self.split == "training":
+        if self.random_matching:
             while True:
                 next_idx = np.random.randint(0, len(image_list))
                 if next_idx != img_idx:
@@ -105,7 +107,8 @@ class ViewDataset(Dataset):
             target_image = self.target_transform(target_image)
 
         if self.mode == "rotate":
-            return input_image, target_image, input_pose, target_pose, intrinsics
+            target_pose_aligned = default_align_cameras(input_pose, target_pose)
+            return input_image, target_image, target_pose_aligned, intrinsics
         elif self.mode == "generate":
             return target_image, target_pose, intrinsics
         else:

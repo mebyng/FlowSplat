@@ -45,11 +45,9 @@ def train(
 
         for x in loader:
             if mode == "rotate":
-                input, target, input_extrinsics, target_extrinsics, intrinsics = x
-                input, target, input_extrinsics, target_extrinsics, intrinsics = input.to(model.device()), target.to(model.device()), input_extrinsics.to(model.device()), target_extrinsics.to(model.device()), intrinsics.to(model.device())
-                plucker_input = compute_plucker(input_extrinsics, intrinsics, height=128, width=128)
-                plucker_target = compute_plucker(target_extrinsics, intrinsics, height=128, width=128)                
-                plucker = torch.cat([plucker_input, plucker_target], dim=1) # (B, 12, H, W)
+                input, target, target_extrinsics, intrinsics = x
+                input, target, target_extrinsics, intrinsics = input.to(model.device()), target.to(model.device()), target_extrinsics.to(model.device()), intrinsics.to(model.device())
+                plucker = compute_plucker(target_extrinsics, intrinsics, height=128, width=128)
             elif mode == "generate":
                 target, extrinsics, intrinsics = x
                 target, extrinsics, intrinsics = target.to(model.device()), extrinsics.to(model.device()), intrinsics.to(model.device())
@@ -82,12 +80,10 @@ def train(
                 for j in range(2):
                     with torch.no_grad():
                         if mode == "rotate":
-                            val_input, val_target, val_input_extrinsics, val_target_extrinsics, val_intrinsics = validation_dataset[i]
+                            val_input, val_target, val_target_extrinsics, val_intrinsics = validation_dataset[i]
                             val_input = val_input.unsqueeze(0).to(model.device())
                             val_target = val_target.unsqueeze(0).to(model.device())
-                            val_plucker_input = compute_plucker(val_input_extrinsics.unsqueeze(0).to(model.device()), val_intrinsics.unsqueeze(0).to(model.device()), height=128, width=128)
-                            val_plucker_target = compute_plucker(val_target_extrinsics.unsqueeze(0).to(model.device()), val_intrinsics.unsqueeze(0).to(model.device()), height=128, width=128)
-                            val_plucker = torch.cat([val_plucker_input, val_plucker_target], dim=1) # (1, 12, H, W)
+                            val_plucker = compute_plucker(val_target_extrinsics.unsqueeze(0).to(model.device()), val_intrinsics.unsqueeze(0).to(model.device()), height=128, width=128)
                         elif mode == "generate":
                             val_target, val_extrinsics, val_intrinsics = validation_dataset[i]
                             val_target = val_target.unsqueeze(0).to(model.device())
@@ -129,10 +125,11 @@ def parse_args():
     parser.add_argument("--scheduler-step", type=int, default=100, help="StepLR step size")
     parser.add_argument("--scheduler-gamma", type=float, default=0.5, help="StepLR gamma")
     parser.add_argument("--eta-min", type=float, default=1e-6, help="Minimum LR for cosine scheduler")
-    parser.add_argument("--dataset-path", type=str, default="datasets/single/")
-    parser.add_argument("--mode", type=str, default="generate", choices=["rotate", "generate"], help="Training mode: 'rotate' for learning rotations, 'generate' for learning to generate views directly (default: 'generate')")
+    parser.add_argument("--dataset-path", type=str, default="datasets/small/")
+    parser.add_argument("--mode", type=str, default="rotate", choices=["rotate", "generate"], help="Training mode: 'rotate' for learning rotations, 'generate' for learning to generate views directly (default: 'generate')")
     parser.add_argument("--savepoint", type=int, default=100, help="Save model and plots every N epochs (default: 10)")
     parser.add_argument("--logdir", type=str, default="runs", help="Directory for TensorBoard logs")
+    parser.add_argument("--run-name", type=str, default=None, help="Optional name for this training run (appended to logdir)")
     return parser.parse_args()
 
 
@@ -140,10 +137,8 @@ def main():
     args = parse_args()
 
     dataset = ViewDataset(args.dataset_path, split="training", mode=args.mode)
-    val_dataset = ViewDataset(args.dataset_path, split="training", mode=args.mode)
-    # model = DebugRegression(UNet(in_channels=72, model_channels=64, out_channels=3)).cuda()
-    model = DebugRegression(RotationConditionedUNet(in_channels=72)).cuda()
-    print(model)
+    val_dataset = ViewDataset(args.dataset_path, split="training", mode=args.mode, random_matching=False)  # Use deterministic matching for validation
+    model = DebugRegression(RotationConditionedUNet(in_channels=75), mode=args.mode).cuda()
 
     num_params = sum(p.numel() for p in model.parameters())
     num_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -166,8 +161,12 @@ def main():
     else:
         scheduler = None
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_dir = os.path.join(args.logdir, f"run_{timestamp}")
+    if args.run_name:
+        log_dir = os.path.join(args.logdir, args.run_name)
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_dir = os.path.join(args.logdir, f"run_{timestamp}")
+    
     print(f"TensorBoard logs will be written to: {log_dir}")
 
     train(

@@ -118,3 +118,11 @@ def compute_plucker(camera_matrix, intrinsics, height, width, fourier=True, num_
         plucker_coords = plucker_coords.squeeze(0)
     
     return plucker_coords
+
+
+def default_align_cameras(cam1, cam2):
+    rot = cam1[:3, :3].T
+    new_cam = torch.zeros(4, 4, device=cam1.device, dtype=cam1.dtype)
+    new_cam[:3] = rot @ cam2[:3]
+    
+    return new_cam
