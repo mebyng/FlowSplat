@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 
-class FlowMatching(nn.Module):
+class FlowWrapper(nn.Module):
     """Simple Flow Matching model."""
 
     def __init__(self, model: nn.Module):
@@ -40,7 +40,7 @@ class FlowMatching(nn.Module):
     
 
 
-class DebugRegression(nn.Module):
+class RegressionWrapper(nn.Module):
     """Simple Regression model."""
 
     def __init__(self, model: nn.Module, mode: str = "rotate"):
@@ -51,6 +51,12 @@ class DebugRegression(nn.Module):
     def device(self):
         """Return the device of the model parameters."""
         return self.model.device()
+    
+    def save(self, path):
+        self.model.save(path)
+
+    def load(self, path):
+        self.model.load(path)
 
     def generate(self, input: torch.Tensor, plucker: torch.Tensor, num_steps: int = 10) -> torch.Tensor:
         """Forward pass through the regression model."""
@@ -59,10 +65,15 @@ class DebugRegression(nn.Module):
             input = torch.cat([input, plucker], dim=1)  # Concatenate input and target images for rotation mode
         elif self.mode == "generate":
             input = plucker  # Use Plucker coordinates directly for generation mode
+        elif self.mode == "encode":
+            input = input  # Use input image directly for encoding mode
         else:
             raise ValueError(f"Invalid mode: {self.mode}")
-        
-        return self.model(input)
+
+        if self.mode == "encode":
+            return self.model(input)[0]
+        else:
+            return self.model(input)
 
     def train_step(self, input: torch.Tensor, plucker: torch.Tensor, target: torch.Tensor, criterion: nn.Module):
         """Perform a single training step."""
@@ -72,6 +83,8 @@ class DebugRegression(nn.Module):
             input = torch.cat([input, plucker], dim=1)  # Concatenate input and target images for rotation mode
         elif self.mode == "generate":
             input = plucker  # Use Plucker coordinates directly for generation mode
+        elif self.mode == "encode":
+            input = input  # Use input image directly for encoding mode
         else:
             raise ValueError(f"Invalid mode: {self.mode}")
 

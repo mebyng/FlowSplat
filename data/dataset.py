@@ -7,20 +7,20 @@ import numpy as np
 import torch
 from PIL import Image
 from torch.utils.data import Dataset
-from utils.camera_utils import default_align_cameras
-
 import csv
 
+from utils.camera_utils import default_align_cameras
 
 
 class ViewDataset(Dataset):
-    def __init__(self, root, split="training", mode="rotate", transform=None, target_transform=None, random_matching=True):
+    def __init__(self, root, split="training", mode="rotate", transform=None, target_transform=None, random_matching=True, use_encoding=False):
         self.root = Path(root) / split
         self.transform = transform
         self.target_transform = target_transform
         self.split = split
         self.mode = mode
         self.random_matching = random_matching
+        self.use_encoding = use_encoding
         self.samples = []
         self.scene_info = {}
         self.scene_intrinsics = {}
@@ -44,7 +44,10 @@ class ViewDataset(Dataset):
             with open(csv_path, newline="") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
-                    filename = row.get("filename")
+                    if self.use_encoding:
+                        filename = row.get("encoded_filename")
+                    else:
+                        filename = row.get("filename")
                     if not filename:
                         continue
                     mat = np.zeros((4, 4), dtype=np.float32)
@@ -72,9 +75,15 @@ class ViewDataset(Dataset):
     def __len__(self):
         return len(self.samples)
 
+    def _load_encoding(self, encoding_path):
+        if not encoding_path.exists():
+            raise FileNotFoundError(f"Encoded representation not found: {encoding_path}")
+        encoding = torch.load(encoding_path)
+        return encoding.squeeze(0)
+
     def _load_image(self, path):
         image = Image.open(path).convert("RGB")
-        if self.transform is not None:
+        if self.transform is not None: # TODO add some default transform (normalization)
             image = self.transform(image)
         else:
             image = torch.from_numpy(np.array(image)).permute(2, 0, 1).float() / 255.0
@@ -100,8 +109,12 @@ class ViewDataset(Dataset):
         target_path, target_pose = image_list[next_idx]
         target_pose = torch.from_numpy(target_pose)
 
-        input_image = self._load_image(input_path)
-        target_image = self._load_image(target_path)
+        if self.use_encoding:
+            input_image = self._load_encoding(input_path)
+            target_image = self._load_encoding(target_path)
+        else:
+            input_image = self._load_image(input_path)
+            target_image = self._load_image(target_path)
 
         if self.target_transform is not None:
             target_image = self.target_transform(target_image)
@@ -111,5 +124,7 @@ class ViewDataset(Dataset):
             return input_image, target_image, target_pose_aligned, intrinsics
         elif self.mode == "generate":
             return target_image, target_pose, intrinsics
+        elif self.mode == "encode":
+            return input_image
         else:
             raise ValueError(f"Invalid mode: {self.mode}")
