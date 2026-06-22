@@ -42,8 +42,7 @@ def generate_encoding(dataset, autoencoder, batch_size=32, device=None, output_d
         if "encoded_filename" not in fieldnames:
             fieldnames = fieldnames + ["encoded_filename"]
 
-        for image_info in image_list:
-            image_path = image_info["image_path"]
+        for image_path, _ in image_list:
             encoding_path = encoding_dir / f"{image_path.stem}.pt"
             if not overwrite and encoding_path.exists():
                 continue

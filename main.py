@@ -30,17 +30,23 @@ def parse_args():
 def main():
     args = parse_args()
 
-    dataset = ViewDataset(args.dataset_path, split="training", mode=args.mode, use_encoding=True)
-    val_dataset = ViewDataset(args.dataset_path, split="training", mode=args.mode, random_matching=False, use_encoding=True)  # Use deterministic matching for validation
+    use_encoding = args.mode != "encode"
+    dataset = ViewDataset(args.dataset_path, split="training", mode=args.mode, use_encoding=use_encoding)
+    val_dataset = ViewDataset(args.dataset_path, split="validation", mode=args.mode, random_matching=False, use_encoding=use_encoding)  # Use deterministic matching for validation
     if args.mode in ["rotate", "generate"]:
-        model = RegressionWrapper(RotationConditionedUNetRes(in_channels=136, out_channels=64), mode=args.mode).cuda()
+        out_channels = 64 if use_encoding else 3
+        in_channels = out_channels + 72 # 72 for camera encoding
+        resolution = 32 if use_encoding else 128
+        model = RegressionWrapper(RotationConditionedUNetRes(in_channels=in_channels, out_channels=out_channels), mode=args.mode).cuda()
+    
+        autoencoder = SimpleAutoEncoder().cuda()
+        autoencoder.load("weight_checkpoints/SimpleAutoEncoder.pth")
     elif args.mode == "encode":
         model = RegressionWrapper(SimpleAutoEncoder(), mode=args.mode).cuda()
+        autoencoder = None
+        resolution = 32
     else:
         raise ValueError(f"Invalid mode: {args.mode}")
-    
-    autoencoder = SimpleAutoEncoder().cuda()
-    autoencoder.load("weight_checkpoints/SimpleAutoEncoder.pth")
 
     num_params = sum(p.numel() for p in model.parameters())
     num_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -81,9 +87,8 @@ def main():
         batch_size=args.batch_size,
         scheduler=scheduler,
         savepoint=args.savepoint,
-        results_dir="results",
         log_dir=log_dir,
-        resolution=32,
+        resolution=resolution,
     )
 
     trainer.train(epochs=args.epochs)

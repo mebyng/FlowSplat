@@ -13,7 +13,7 @@ from utils.camera_utils import default_align_cameras
 
 
 class ViewDataset(Dataset):
-    def __init__(self, root, split="training", mode="rotate", transform=None, target_transform=None, random_matching=True, use_encoding=False):
+    def __init__(self, root, split="training", mode="rotate", transform=None, target_transform=None, random_matching=True, use_encoding=False, max_images=None):
         self.root = Path(root) / split
         self.transform = transform
         self.target_transform = target_transform
@@ -67,7 +67,11 @@ class ViewDataset(Dataset):
             self.scene_info[scene_dir] = image_list
             self.scene_intrinsics[scene_dir] = intrinsics
             for idx in range(len(image_list)):
+                if max_images is not None and len(self.samples) >= max_images:
+                    break
                 self.samples.append((scene_dir, idx))
+            if max_images is not None and len(self.samples) >= max_images:
+                break
 
         if not self.samples:
             raise ValueError(f"No valid image samples found in {self.root}")

@@ -3,28 +3,40 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import lpips
 
 
 class AutoEncoderLoss(nn.Module):
-    """Loss function for autoencoder training, using Mean Squared Error."""
+    """Loss function for autoencoder training, combining MSE, LPIPS, and latent regularization."""
     
-    def __init__(self):
+    def __init__(self, device, mse_weight: float = 1.0, lpips_weight: float = 0.0, latent_weight: float = 1e-3):
         super().__init__()
+        self.mse_weight = mse_weight
+        self.lpips_weight = lpips_weight
+        self.latent_weight = latent_weight
         self.mse = nn.MSELoss()
-    
+        if lpips_weight != 0.0:
+            self.lpips = lpips.LPIPS(net="vgg").to(device)
+
+    def _latent_regularization(self, latent: torch.Tensor) -> torch.Tensor:
+        mean = latent.mean(dim=[0, 2, 3])
+        var = latent.var(dim=[0, 2, 3], unbiased=False)
+        mean_loss = mean.pow(2).mean()
+        var_loss = (var - 1.0).pow(2).mean()
+        return mean_loss + var_loss
+
     def forward(self, encoding, target):
-        """Compute the MSE loss between reconstructions and targets."""
         reconstruction, latent = encoding
 
-        # image losses
-        loss = self.mse(reconstruction, target)
-        # TODO add perceptual loss or other losses to improve reconstruction quality
+        loss = self.mse_weight * self.mse(reconstruction, target)
 
-        # latent losses
-        # loss += torch.mean(latent ** 2) * 0.1  # L2 regularization on latent space
-        # TODO more sophisticated weighting
+        if self.lpips_weight != 0.0:
+            loss = loss + self.lpips_weight * self.lpips(reconstruction, target, normalize=True) # TODO change this when we add normalization to dataset
 
-        return loss
+        if self.latent_weight != 0.0:
+            loss = loss + self.latent_weight * self._latent_regularization(latent)
+
+        return loss.mean()
 
 
 class ResidualBlock(nn.Module):

@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 
+from .AutoEncoder import AutoEncoderLoss
+
 
 class FlowWrapper(nn.Module):
     """Simple Flow Matching model."""
@@ -48,6 +50,13 @@ class RegressionWrapper(nn.Module):
         self.model = model
         self.mode = mode
 
+        if self.mode in ["rotate", "generate"]:
+            self.criterion = torch.nn.MSELoss()
+        elif self.mode == "encode":
+            self.criterion = AutoEncoderLoss(self.device())
+        else:
+            raise ValueError(f"Invalid mode: {self.mode}")
+
     def device(self):
         """Return the device of the model parameters."""
         return self.model.device()
@@ -57,6 +66,7 @@ class RegressionWrapper(nn.Module):
 
     def load(self, path):
         self.model.load(path)
+        
 
     def generate(self, input: torch.Tensor, plucker: torch.Tensor, num_steps: int = 10) -> torch.Tensor:
         """Forward pass through the regression model."""
@@ -75,7 +85,7 @@ class RegressionWrapper(nn.Module):
         else:
             return self.model(input)
 
-    def train_step(self, input: torch.Tensor, plucker: torch.Tensor, target: torch.Tensor, criterion: nn.Module):
+    def train_step(self, input: torch.Tensor, plucker: torch.Tensor, target: torch.Tensor):
         """Perform a single training step."""
         self.train()
 
@@ -89,5 +99,5 @@ class RegressionWrapper(nn.Module):
             raise ValueError(f"Invalid mode: {self.mode}")
 
         pred = self.model(input)
-        loss = criterion(pred, target)
+        loss = self.criterion(pred, target)
         return loss
