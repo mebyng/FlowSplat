@@ -14,8 +14,12 @@ class _ConvBlock(nn.Module):
         self.norm1 = nn.GroupNorm(8, out_channels)
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
         self.norm2 = nn.GroupNorm(8, out_channels)
-        self.cond1 = nn.Linear(emb_channels, out_channels) if emb_channels is not None else None
-        self.cond2 = nn.Linear(emb_channels, out_channels) if emb_channels is not None else None
+        self.cond1 = (
+            nn.Linear(emb_channels, out_channels) if emb_channels is not None else None
+        )
+        self.cond2 = (
+            nn.Linear(emb_channels, out_channels) if emb_channels is not None else None
+        )
 
     def forward(self, x, cond=None):
         x = self.conv1(x)
@@ -30,10 +34,11 @@ class _ConvBlock(nn.Module):
             x = x + self.cond2(cond)[:, :, None, None]
         x = F.silu(x)
         return x
-    
+
+
 class ResBlock(nn.Module):
     """A residual block that accepts timestep embeddings."""
-    
+
     def __init__(
         self,
         channels,
@@ -71,7 +76,7 @@ class ResBlock(nn.Module):
         else:
             self.skip_connection = nn.Conv2d(channels, self.out_channels, 1)
 
-    def forward(self, x, emb = None):
+    def forward(self, x, emb=None):
         h = self.in_layers(x)
         h = self.out_norm(h)
         if emb is not None:
@@ -107,12 +112,13 @@ class _Up(nn.Module):
         x = torch.cat([x, skip], dim=1)
         return self.block(x, cond)
 
-    
 
 class RotationConditionedUNetRes(nn.Module):
     """Lightweight UNet that conditions on a 3x3 rotation matrix."""
 
-    def __init__(self, in_channels=3, out_channels=3, base_channels=32, emb_channels=64):
+    def __init__(
+        self, in_channels=3, out_channels=3, base_channels=32, emb_channels=64
+    ):
         super().__init__()
         self.cond_embed = nn.Sequential(
             nn.Linear(1, emb_channels),
@@ -146,6 +152,12 @@ class RotationConditionedUNetRes(nn.Module):
     def device(self):
         return next(self.parameters()).device
 
+    def save(self, path):
+        torch.save(self.state_dict(), path)
+
+    def load(self, path):
+        self.load_state_dict(torch.load(path))
+
     def forward(self, image, timestep=None):
         """Forward pass.
 
@@ -159,18 +171,16 @@ class RotationConditionedUNetRes(nn.Module):
         if timestep is not None:
             cond_tmp = self.cond_embed(timestep)
         else:
-            cond_tmp = torch.zeros(image.size(0), self.cond_embed[0].out_features, device=image.device)
+            cond_tmp = torch.zeros(
+                image.size(0), self.cond_embed[0].out_features, device=image.device
+            )
 
-        x1 = self.enc(image, cond_tmp) # shape (B, base_channels, H, W)
-        x2 = self.enc2(x1, cond_tmp) # shape (B, base_channels*2, H, W)
-        x3 = self.enc3(x2, cond_tmp) # shape (B, base_channels*2, H, W)
+        x1 = self.enc(image, cond_tmp)  # shape (B, base_channels, H, W)
+        x2 = self.enc2(x1, cond_tmp)  # shape (B, base_channels*2, H, W)
+        x3 = self.enc3(x2, cond_tmp)  # shape (B, base_channels*2, H, W)
         x4 = self.down1(x3, cond_tmp) # shape (B, base_channels*2, H/2, W/2)
         x5 = self.down2(x4, cond_tmp) # shape (B, base_channels*4, H/4, W/4)
 
-        x = self.bottleneck1(x5, cond_tmp) # shape (B, base_channels*8, H/4, W/4)
-        x = self.bottleneck2(x, cond_tmp) # shape (B, base_channels*8, H/4, W/4)
-        x = self.up1(x, x4, cond_tmp) # shape (B, base_channels*4, H/2, W/2)
-        x = self.up2(x, x3, cond_tmp) # shape (B, base_channels*2, H, W)
-        x = self.dec(x, cond_tmp) # shape (B, base_channels, H, W)
-        x = self.dec2(x, cond_tmp) # shape (B, base_channels, H, W)
+        x = self.dec(x, cond_tmp)  # shape (B, base_channels, H, W)
+        x = self.dec2(x, cond_tmp)  # shape (B, base_channels, H, W)
         return self.out_conv(x)

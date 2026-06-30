@@ -3,9 +3,9 @@ import pyrender
 import numpy as np
 
 valid_colors = [
-    [200, 80, 80, 255],   # Red-ish
-    [80, 200, 80, 255],   # Green-ish
-    [80, 80, 200, 255],   # Blue-ish
+    [200, 80, 80, 255],  # Red-ish
+    [80, 200, 80, 255],  # Green-ish
+    [80, 80, 200, 255],  # Blue-ish
     [200, 200, 80, 255],  # Yellow-ish
     [200, 80, 200, 255],  # Magenta-ish
     [80, 200, 200, 255],  # Cyan-ish
@@ -36,9 +36,8 @@ def generate_random_sphere():
     return sphere
 
 
-
 def make_scene(num_objects=3):
-    
+
     scene = trimesh.Scene()
     for _ in range(num_objects):
         if np.random.rand() < 0.5:
@@ -47,7 +46,7 @@ def make_scene(num_objects=3):
             obj = generate_random_sphere()
         scene.add_geometry(obj)
 
-    mesh = scene.dump(concatenate=True) 
+    mesh = scene.dump(concatenate=True)
     render_scene = pyrender.Scene()
 
     render_mesh = pyrender.Mesh.from_trimesh(mesh, smooth=True)

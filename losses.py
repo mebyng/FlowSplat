@@ -19,7 +19,13 @@ class MSELoss(nn.Module):
 class AutoEncoderLoss(nn.Module):
     """Loss function for autoencoder training, combining MSE, LPIPS, and latent regularization."""
 
-    def __init__(self, device, mse_weight: float = 1.0, lpips_weight: float = 0.0, latent_weight: float = 1e-3):
+    def __init__(
+        self,
+        device,
+        mse_weight: float = 1.0,
+        lpips_weight: float = 0.0,
+        latent_weight: float = 1e-3,
+    ):
         super().__init__()
         self.mse_weight = mse_weight
         self.lpips_weight = lpips_weight
@@ -44,11 +50,15 @@ class AutoEncoderLoss(nn.Module):
         loss = self.mse_weight * loss_dict["mse"]
 
         if self.lpips_weight != 0.0:
-            loss_dict["lpips"] = self.lpips(reconstruction, target, normalize=True).mean() # TODO change this when we add normalization to dataset
+            loss_dict["lpips"] = self.lpips(
+                reconstruction, target, normalize=True
+            ).mean()  # TODO change this when we add normalization to dataset
             loss = loss + self.lpips_weight * loss_dict["lpips"]
 
         if self.latent_weight != 0.0:
-            loss_dict["latent_regulatization"] = self._latent_regularization(latent).mean()
+            loss_dict["latent_regulatization"] = self._latent_regularization(
+                latent
+            ).mean()
             loss = loss + self.latent_weight * loss_dict["latent_regulatization"]
 
         loss_dict["total"] = loss

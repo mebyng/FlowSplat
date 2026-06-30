@@ -10,7 +10,6 @@ from utils import compute_plucker
 from logger import SampleLogger
 
 
-
 class Trainer:
     def __init__(
         self,
@@ -40,7 +39,9 @@ class Trainer:
         self.log_dir = log_dir
         self.resolution = resolution
 
-        self.train_loader = DataLoader(self.dataset, batch_size=self.batch_size, shuffle=True)
+        self.train_loader = DataLoader(
+            self.dataset, batch_size=self.batch_size, shuffle=True
+        )
         self.val_loader = None
         self.logger = SampleLogger(
             train_dataset=self.dataset,
@@ -53,7 +54,9 @@ class Trainer:
             autoencoder=self.autoencoder,
         )
         if self.validation_dataset is not None:
-            self.val_loader = DataLoader(self.validation_dataset, batch_size=self.batch_size, shuffle=False)
+            self.val_loader = DataLoader(
+                self.validation_dataset, batch_size=self.batch_size, shuffle=False
+            )
 
     def _prepare_batch(self, batch):
         if self.mode == "rotate":
@@ -62,14 +65,21 @@ class Trainer:
             target = target.to(self.model.device())
             target_extrinsics = target_extrinsics.to(self.model.device())
             intrinsics = intrinsics.to(self.model.device())
-            plucker = compute_plucker(target_extrinsics, intrinsics, height=self.resolution, width=self.resolution)
+            plucker = compute_plucker(
+                target_extrinsics,
+                intrinsics,
+                height=self.resolution,
+                width=self.resolution,
+            )
         elif self.mode == "generate":
             target, extrinsics, intrinsics = batch
             target = target.to(self.model.device())
             extrinsics = extrinsics.to(self.model.device())
             intrinsics = intrinsics.to(self.model.device())
             input = torch.randn_like(target)
-            plucker = compute_plucker(extrinsics, intrinsics, height=self.resolution, width=self.resolution)
+            plucker = compute_plucker(
+                extrinsics, intrinsics, height=self.resolution, width=self.resolution
+            )
         elif self.mode == "encode":
             input = batch.to(self.model.device())
             target = input
@@ -101,7 +111,9 @@ class Trainer:
             loss_dict, count = self.train_step(batch)
             total_count += count
             for name, value in loss_dict.items():
-                loss_sums[name] = loss_sums.get(name, 0.0) + value.detach().item() * count
+                loss_sums[name] = (
+                    loss_sums.get(name, 0.0) + value.detach().item() * count
+                )
 
         scale = max(total_count, 1)
         return {name: value / scale for name, value in loss_sums.items()}
@@ -115,7 +127,9 @@ class Trainer:
             loss_dict, count = self.val_step(batch)
             total_count += count
             for name, value in loss_dict.items():
-                loss_sums[name] = loss_sums.get(name, 0.0) + value.detach().item() * count
+                loss_sums[name] = (
+                    loss_sums.get(name, 0.0) + value.detach().item() * count
+                )
 
         scale = max(total_count, 1)
         return {name: value / scale for name, value in loss_sums.items()}

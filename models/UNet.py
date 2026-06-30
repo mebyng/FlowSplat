@@ -13,8 +13,9 @@ def timestep_embedding(timesteps, dim, max_period=10000):
     """Create sinusoidal timestep embeddings."""
     half = dim // 2
     freqs = torch.exp(
-        -math.log(max_period) *
-        torch.arange(start=0, end=half, dtype=torch.float32) / half
+        -math.log(max_period)
+        * torch.arange(start=0, end=half, dtype=torch.float32)
+        / half
     ).to(device=timesteps.device)
     args = timesteps[:, None].float() * freqs[None]
     embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
@@ -32,12 +33,14 @@ def zero_module(module):
 
 class TimestepBlock(nn.Module):
     """Base class for modules that take timestep embeddings."""
+
     def forward(self, x, emb):
         raise NotImplementedError
 
 
 class TimestepEmbedSequential(nn.Sequential):
     """A sequential module that passes timestep embeddings to children that support it."""
+
     def forward(self, x, emb):
         for layer in self:
             if isinstance(layer, TimestepBlock):
@@ -49,7 +52,7 @@ class TimestepEmbedSequential(nn.Sequential):
 
 class ResBlock(TimestepBlock):
     """A residual block that accepts timestep embeddings."""
-    
+
     def __init__(
         self,
         channels,
@@ -99,7 +102,7 @@ class ResBlock(TimestepBlock):
 
 class Upsample(nn.Module):
     """An upsampling layer with optional convolution."""
-    
+
     def __init__(self, channels, use_conv=True):
         super().__init__()
         self.channels = channels
@@ -117,12 +120,12 @@ class Upsample(nn.Module):
 
 class Downsample(nn.Module):
     """A downsampling layer with optional convolution."""
-    
+
     def __init__(self, channels, use_conv=True):
         super().__init__()
         self.channels = channels
         self.use_conv = use_conv
-        
+
         if use_conv:
             self.op = nn.Conv2d(channels, channels, 3, stride=2, padding=1)
         else:
@@ -136,7 +139,7 @@ class Downsample(nn.Module):
 class UNet(nn.Module):
     """
     A lightweight UNet model with timestep embeddings.
-    
+
     Args:
         in_channels: Number of input channels
         model_channels: Base channel count
@@ -145,7 +148,7 @@ class UNet(nn.Module):
         channel_mult: Channel multiplier for each level
         dropout: Dropout probability
     """
-    
+
     def __init__(
         self,
         in_channels,
@@ -156,7 +159,7 @@ class UNet(nn.Module):
         dropout=0.1,
     ):
         super().__init__()
-        
+
         self.model_channels = model_channels
 
         # timestep embeddings
@@ -168,22 +171,24 @@ class UNet(nn.Module):
         )
 
         # Input blocks (encoder)
-        self.input_blocks = nn.ModuleList([
-            TimestepEmbedSequential(
-                nn.Conv2d(in_channels, model_channels, 3, padding=1)
-            )
-        ])
-        
+        self.input_blocks = nn.ModuleList(
+            [
+                TimestepEmbedSequential(
+                    nn.Conv2d(in_channels, model_channels, 3, padding=1)
+                )
+            ]
+        )
+
         input_block_chans = [model_channels]
         ch = model_channels
-        
+
         for level, mult in enumerate(channel_mult):
             for i in range(num_res_blocks):
                 if i == 0:
                     layers = [Downsample(ch, use_conv=True)]
                 else:
                     layers = []
-                    
+
                 layers.append(
                     ResBlock(
                         ch,
@@ -195,7 +200,6 @@ class UNet(nn.Module):
                 ch = mult * model_channels
                 self.input_blocks.append(TimestepEmbedSequential(*layers))
                 input_block_chans.append(ch)
-            
 
         # Middle block (bottleneck)
         self.middle_block = TimestepEmbedSequential(
@@ -241,19 +245,25 @@ class UNet(nn.Module):
     def forward(self, x, timesteps=None):
         """
         Apply the model to an input batch.
-        
+
         Args:
             x: An [N x C x ...] tensor of inputs
             timesteps: A 1-D batch of timesteps
-            
+
         Returns:
             An [N x C x ...] tensor of outputs
         """
 
         if timesteps is not None:
-            time_emb = self.time_embed(timestep_embedding(timesteps, self.model_channels)).squeeze(1)
+            time_emb = self.time_embed(
+                timestep_embedding(timesteps, self.model_channels)
+            ).squeeze(1)
         else:
-            time_emb = self.time_embed(timestep_embedding(torch.zeros(x.size(0), device=x.device), self.model_channels)).squeeze(1)
+            time_emb = self.time_embed(
+                timestep_embedding(
+                    torch.zeros(x.size(0), device=x.device), self.model_channels
+                )
+            ).squeeze(1)
 
         # Encoder
         hs = []

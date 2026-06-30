@@ -11,7 +11,14 @@ from data import ViewDataset
 from models import SimpleAutoEncoder
 
 
-def generate_encoding(dataset, autoencoder, batch_size=32, device=None, output_dirname="encodings", overwrite=False):
+def generate_encoding(
+    dataset,
+    autoencoder,
+    batch_size=32,
+    device=None,
+    output_dirname="encodings",
+    overwrite=False,
+):
     """Run every dataset image through the autoencoder encoder and save latent encodings.
 
     Args:
@@ -54,7 +61,9 @@ def generate_encoding(dataset, autoencoder, batch_size=32, device=None, output_d
         for row in rows:
             filename = row.get("filename")
             if filename:
-                row["encoded_filename"] = str(Path(output_dirname) / f"{Path(filename).stem}.pt")
+                row["encoded_filename"] = str(
+                    Path(output_dirname) / f"{Path(filename).stem}.pt"
+                )
 
         with open(csv_path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -64,7 +73,7 @@ def generate_encoding(dataset, autoencoder, batch_size=32, device=None, output_d
 
 if __name__ == "__main__":
     dataset_path = "datasets/small_512"
-    dataset = ViewDataset(dataset_path, split="validation", mode="encode")
+    dataset = ViewDataset(dataset_path, split="training", mode="encode")
     autoencoder = SimpleAutoEncoder().cuda()
-    autoencoder.load("weight_checkpoints/SimpleAutoEncoder.pth")
-    generate_encoding(dataset, autoencoder)
+    autoencoder.load("weight_checkpoints/SimpleAutoEncoder_medium.pth")
+    generate_encoding(dataset, autoencoder, overwrite=True)

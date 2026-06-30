@@ -37,7 +37,9 @@ class SampleLogger:
             name: self._select_sample_indices(dataset, name)
             for name, dataset in self.datasets
         }
-        self.random_inputs = self._create_random_inputs() if self.mode == "generate" else []
+        self.random_inputs = (
+            self._create_random_inputs() if self.mode == "generate" else []
+        )
 
     def _select_sample_indices(self, dataset: ViewDataset, name: str):
         dataset_length = len(dataset)
@@ -48,7 +50,9 @@ class SampleLogger:
 
         generator = torch.Generator()
         generator.manual_seed(42)
-        return torch.randperm(dataset_length, generator=generator)[: self.n_images].tolist()
+        return torch.randperm(dataset_length, generator=generator)[
+            : self.n_images
+        ].tolist()
 
     def _create_random_inputs(self):
         channels = 64 if self.datasets[0][1].use_encoding else 3
@@ -75,11 +79,16 @@ class SampleLogger:
                 # In rotate mode, there's one fixed target per input, so j is meaningless
                 # In generate/encode mode, j represents different random samples
                 n_loops = 1 if self.mode != "generate" else self.n_samples
-                
+
                 for j in range(n_loops):
                     with torch.no_grad():
                         if self.mode == "rotate":
-                            val_input, val_target, val_target_extrinsics, val_intrinsics = dataset[i]
+                            (
+                                val_input,
+                                val_target,
+                                val_target_extrinsics,
+                                val_intrinsics,
+                            ) = dataset[i]
                             val_input = val_input.unsqueeze(0).to(device)
                             val_target = val_target.unsqueeze(0).to(device)
                             val_plucker = compute_plucker(
@@ -109,14 +118,18 @@ class SampleLogger:
 
                         if dataset.use_encoding:
                             if self.autoencoder is None:
-                                raise ValueError("encoding is used but no autoencoder provided")
+                                raise ValueError(
+                                    "encoding is used but no autoencoder provided"
+                                )
                             val_input = self.autoencoder.decode(val_input)
                             val_target = self.autoencoder.decode(val_target)
                             val_pred = self.autoencoder.decode(val_pred)
 
                         save_image(val_input, str(subset_dir / f"{i}_{j}_input.png"))
                         save_image(val_target, str(subset_dir / f"{i}_{j}_target.png"))
-                        save_image(val_pred, str(subset_dir / f"{i}_{j}_prediction.png"))
+                        save_image(
+                            val_pred, str(subset_dir / f"{i}_{j}_prediction.png")
+                        )
 
                         combined = torch.cat([val_input, val_target, val_pred], dim=-1)
                         writer.add_images(f"{name}/combined_{i}_{j}", combined, epoch)

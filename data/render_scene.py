@@ -9,26 +9,35 @@ def rotation_matrix(axis, angle):
     c = np.cos(angle)
     s = np.sin(angle)
     if axis == "z":
-        return np.array([
-            [c, -s, 0.0, 0.0],
-            [s, c, 0.0, 0.0],
-            [0.0, 0.0, 1.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ], dtype=np.float32)
+        return np.array(
+            [
+                [c, -s, 0.0, 0.0],
+                [s, c, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
     elif axis == "x":
-        return np.array([
-            [1.0, 0.0, 0.0, 0.0],
-            [0.0, c, -s, 0.0],
-            [0.0, s, c, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ], dtype=np.float32)
+        return np.array(
+            [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, c, -s, 0.0],
+                [0.0, s, c, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
     elif axis == "y":
-        return np.array([
-            [c, 0.0, -s, 0.0],
-            [0.0, 1.0, 0.0, 0.0],
-            [s, 0.0, c, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ], dtype=np.float32)
+        return np.array(
+            [
+                [c, 0.0, -s, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [s, 0.0, c, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
     raise ValueError(f"Unsupported axis: {axis}")
 
 
@@ -72,17 +81,17 @@ def compute_intrinsic_matrix(yfov, resolution):
     fx = fy  # Assuming square pixels
     cx = resolution / 2.0
     cy = resolution / 2.0
-    K = np.array([
-        [fx, 0.0, cx],
-        [0.0, fy, cy],
-        [0.0, 0.0, 1.0]
-    ], dtype=np.float32)
+    K = np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float32)
     return K
 
 
-def render_views(scene, step_z=10, step_x=10, radius=2.0, resolution=128, output_dir="datasets"):
+def render_views(
+    scene, step_z=10, step_x=10, radius=2.0, resolution=128, output_dir="datasets"
+):
     os.makedirs(output_dir, exist_ok=True)
-    renderer = pyrender.OffscreenRenderer(viewport_width=resolution, viewport_height=resolution)
+    renderer = pyrender.OffscreenRenderer(
+        viewport_width=resolution, viewport_height=resolution
+    )
     camera = pyrender.PerspectiveCamera(yfov=np.pi / 3.0)
 
     # Compute and save intrinsic matrix
@@ -118,9 +127,18 @@ def generate_random_cameras(num_views=100, radius=1.0):
     return cams
 
 
-def render_views_random(scene, num_views=100, radius=2.0, resolution=128, output_dir="datasets", csv_path=None):
+def render_views_random(
+    scene,
+    num_views=100,
+    radius=2.0,
+    resolution=128,
+    output_dir="datasets",
+    csv_path=None,
+):
     os.makedirs(output_dir, exist_ok=True)
-    renderer = pyrender.OffscreenRenderer(viewport_width=resolution, viewport_height=resolution)
+    renderer = pyrender.OffscreenRenderer(
+        viewport_width=resolution, viewport_height=resolution
+    )
     camera = pyrender.PerspectiveCamera(yfov=np.pi / 3.0)
 
     # Compute and save intrinsic matrix
