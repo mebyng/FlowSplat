@@ -5,23 +5,22 @@ from datetime import datetime
 import torch
 
 from data import ViewDataset
-from models import SimpleAutoEncoder, RegressionWrapper
-from models.UNetDummy import RotationConditionedUNetRes
+from models import SimpleAutoEncoder, RegressionWrapper, RotationConditionedUNetRes, FlowWrapper
 from trainer import Trainer
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a Diffusion Model to generate rotated scenes.")
     parser.add_argument("--epochs", type=int, default=1000)
-    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--scheduler", type=str, default="cosine", choices=["cosine", "step", "none"], help="Learning rate scheduler type")
     parser.add_argument("--scheduler-step", type=int, default=100, help="StepLR step size")
     parser.add_argument("--scheduler-gamma", type=float, default=0.5, help="StepLR gamma")
     parser.add_argument("--eta-min", type=float, default=1e-6, help="Minimum LR for cosine scheduler")
-    parser.add_argument("--dataset-path", type=str, default="datasets/small_512/")
+    parser.add_argument("--dataset-path", type=str, default="datasets/medium_512/")
     parser.add_argument("--mode", type=str, default="rotate", choices=["rotate", "generate", "encode"], help="Training mode: 'rotate' for learning rotations, 'generate' for learning to generate views directly (default: 'generate')")
-    parser.add_argument("--savepoint", type=int, default=100, help="Save model and plots every N epochs (default: 10)")
+    parser.add_argument("--savepoint", type=int, default=50, help="Save model and plots every N epochs (default: 10)")
     parser.add_argument("--logdir", type=str, default="runs", help="Directory for TensorBoard logs")
     parser.add_argument("--run-name", type=str, default=None, help="Optional name for this training run (appended to logdir)")
     return parser.parse_args()
@@ -33,14 +32,22 @@ def main():
     use_encoding = args.mode != "encode"
     dataset = ViewDataset(args.dataset_path, split="training", mode=args.mode, use_encoding=use_encoding)
     val_dataset = ViewDataset(args.dataset_path, split="validation", mode=args.mode, random_matching=False, use_encoding=use_encoding)  # Use deterministic matching for validation
-    if args.mode in ["rotate", "generate"]:
+    if args.mode == "generate":
+        out_channels = 64 if use_encoding else 3
+        in_channels = out_channels + 72 # 72 for camera encoding
+        resolution = 32 if use_encoding else 128
+        model = FlowWrapper(RotationConditionedUNetRes(in_channels=in_channels, out_channels=out_channels)).cuda()
+    
+        autoencoder = SimpleAutoEncoder().cuda().eval()
+        autoencoder.load("weight_checkpoints/SimpleAutoEncoder_medium.pth")
+    elif args.mode == "rotate":
         out_channels = 64 if use_encoding else 3
         in_channels = out_channels + 72 # 72 for camera encoding
         resolution = 32 if use_encoding else 128
         model = RegressionWrapper(RotationConditionedUNetRes(in_channels=in_channels, out_channels=out_channels), mode=args.mode).cuda()
     
-        autoencoder = SimpleAutoEncoder().cuda()
-        autoencoder.load("weight_checkpoints/SimpleAutoEncoder.pth")
+        autoencoder = SimpleAutoEncoder().cuda().eval()
+        autoencoder.load("weight_checkpoints/SimpleAutoEncoder_medium.pth")
     elif args.mode == "encode":
         model = RegressionWrapper(SimpleAutoEncoder(), mode=args.mode).cuda()
         autoencoder = None

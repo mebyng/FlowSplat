@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from .AutoEncoder import AutoEncoderLoss
+from losses import AutoEncoderLoss, MSELoss
 
 
 class FlowWrapper(nn.Module):
@@ -11,9 +11,17 @@ class FlowWrapper(nn.Module):
         super().__init__()
         self.model = model
 
+        self.criterion = MSELoss()
+
     def device(self):
         """Return the device of the model parameters."""
         return self.model.device()
+    
+    def save(self, path):
+        self.model.save(path)
+
+    def load(self, path):
+        self.model.load(path)
 
     def generate(self, input: torch.Tensor, plucker: torch.Tensor, num_steps: int = 10) -> torch.Tensor:
         """Forward pass through the flow matching model."""
@@ -25,7 +33,7 @@ class FlowWrapper(nn.Module):
             curr = curr + self.model(inp, t) * dt
         return curr
 
-    def train_step(self, input: torch.Tensor, plucker: torch.Tensor, target: torch.Tensor, criterion: nn.Module):
+    def train_step(self, input: torch.Tensor, plucker: torch.Tensor, target: torch.Tensor):
         """Perform a single training step."""
         self.train()
         t = torch.rand(target.size(0), 1, device=target.device)
@@ -37,8 +45,8 @@ class FlowWrapper(nn.Module):
         x_t = torch.cat([x_t, plucker], dim=1)  # Concatenate input with Plucker coordinates
 
         pred = self.model(x_t, t)
-        loss = criterion(pred, v_target)
-        return loss
+        loss, loss_dict = self.criterion(pred, v_target)
+        return loss, loss_dict
     
 
 
@@ -51,7 +59,7 @@ class RegressionWrapper(nn.Module):
         self.mode = mode
 
         if self.mode in ["rotate", "generate"]:
-            self.criterion = torch.nn.MSELoss()
+            self.criterion = MSELoss()
         elif self.mode == "encode":
             self.criterion = AutoEncoderLoss(self.device())
         else:
@@ -99,5 +107,5 @@ class RegressionWrapper(nn.Module):
             raise ValueError(f"Invalid mode: {self.mode}")
 
         pred = self.model(input)
-        loss = self.criterion(pred, target)
-        return loss
+        loss, loss_dict = self.criterion(pred, target)
+        return loss, loss_dict

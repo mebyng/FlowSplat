@@ -3,11 +3,12 @@ import os
 import torch
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from torchvision.utils import save_image
 from tqdm import trange
 
 from data import ViewDataset
 from utils import compute_plucker
+from logger import SampleLogger
+
 
 
 class Trainer:
@@ -24,6 +25,8 @@ class Trainer:
         savepoint: int = 10,
         log_dir: str = "runs",
         resolution: int = 128,
+        validation_n_images: int = 5,
+        validation_n_samples: int = 2,
     ):
         self.dataset = dataset
         self.validation_dataset = validation_dataset
@@ -39,6 +42,16 @@ class Trainer:
 
         self.train_loader = DataLoader(self.dataset, batch_size=self.batch_size, shuffle=True)
         self.val_loader = None
+        self.logger = SampleLogger(
+            train_dataset=self.dataset,
+            validation_dataset=self.validation_dataset,
+            n_images=validation_n_images,
+            n_samples=validation_n_samples,
+            log_path=self.log_dir,
+            mode=self.mode,
+            resolution=self.resolution,
+            autoencoder=self.autoencoder,
+        )
         if self.validation_dataset is not None:
             self.val_loader = DataLoader(self.validation_dataset, batch_size=self.batch_size, shuffle=False)
 
@@ -67,102 +80,45 @@ class Trainer:
 
     def train_step(self, batch):
         input, plucker, target = self._prepare_batch(batch)
-        loss = self.model.train_step(input, plucker, target)
+        loss, loss_dict = self.model.train_step(input, plucker, target)
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
-        return loss.item(), target.shape[0]
+        return loss_dict, target.shape[0]
 
     def val_step(self, batch):
         input, plucker, target = self._prepare_batch(batch)
         self.model.eval()
         with torch.no_grad():
             prediction = self.model.generate(input, plucker)
-            loss = self.model.criterion(prediction, target)
-        return loss.item(), target.shape[0]
+            loss, loss_dict = self.model.criterion(prediction, target)
+        return loss_dict, target.shape[0]
 
     def train_epoch(self):
-        total_loss = 0.0
         total_count = 0
+        loss_sums = {}
         for batch in self.train_loader:
-            loss_item, count = self.train_step(batch)
-            total_loss += loss_item * count
+            loss_dict, count = self.train_step(batch)
             total_count += count
-        return total_loss / max(total_count, 1)
+            for name, value in loss_dict.items():
+                loss_sums[name] = loss_sums.get(name, 0.0) + value.detach().item() * count
+
+        scale = max(total_count, 1)
+        return {name: value / scale for name, value in loss_sums.items()}
 
     def val_epoch(self):
         if self.val_loader is None:
             raise ValueError("Validation dataset is not provided for val_epoch")
-        total_loss = 0.0
         total_count = 0
+        loss_sums = {}
         for batch in self.val_loader:
-            loss_item, count = self.val_step(batch)
-            total_loss += loss_item * count
+            loss_dict, count = self.val_step(batch)
             total_count += count
-        return total_loss / max(total_count, 1)
+            for name, value in loss_dict.items():
+                loss_sums[name] = loss_sums.get(name, 0.0) + value.detach().item() * count
 
-    def _save_validation_samples(self, epoch: int, final=False):
-        if self.validation_dataset is None:
-            return
-        
-        if final:
-            save_dir = os.path.join(self.log_dir, f"final")
-        else:
-            save_dir = os.path.join(self.log_dir, f"epoch_{epoch:05d}")
-        os.makedirs(save_dir, exist_ok=True)
-        base_random1 = torch.randn(1, 3, self.resolution, self.resolution, device=self.model.device())
-        base_random2 = torch.randn(1, 3, self.resolution, self.resolution, device=self.model.device())
-
-        self.model.save(os.path.join(save_dir, "model_checkpoint.pth"))
-
-        # TODO use dataloader
-        for i in range(5):
-            for j in range(2):
-                with torch.no_grad():
-                    if self.mode == "rotate":
-                        val_input, val_target, val_target_extrinsics, val_intrinsics = self.validation_dataset[i]
-                        val_input = val_input.unsqueeze(0).to(self.model.device())
-                        val_target = val_target.unsqueeze(0).to(self.model.device())
-                        val_plucker = compute_plucker(
-                            val_target_extrinsics.unsqueeze(0).to(self.model.device()),
-                            val_intrinsics.unsqueeze(0).to(self.model.device()),
-                            height=self.resolution,
-                            width=self.resolution,
-                        )
-                    elif self.mode == "generate":
-                        val_target, val_extrinsics, val_intrinsics = self.validation_dataset[i]
-                        val_target = val_target.unsqueeze(0).to(self.model.device())
-                        val_plucker = compute_plucker(
-                            val_extrinsics.unsqueeze(0).to(self.model.device()),
-                            val_intrinsics.unsqueeze(0).to(self.model.device()),
-                            height=self.resolution,
-                            width=self.resolution,
-                        )
-                        val_input = base_random1 if j == 0 else base_random2
-                    elif self.mode == "encode":
-                        val_input = self.validation_dataset[i].unsqueeze(0).to(self.model.device())
-                        val_target = val_input
-                        val_plucker = None
-                    else:
-                        raise ValueError(f"Invalid mode: {self.mode}")
-
-                    val_pred = self.model.generate(val_input, val_plucker)
-
-                    if self.validation_dataset.use_encoding:
-                        if self.autoencoder is None:
-                            raise ValueError("encoding is used but no autoencoder provided")
-                        val_input = self.autoencoder.decode(val_input)
-                        val_target = self.autoencoder.decode(val_target)
-                        val_pred = self.autoencoder.decode(val_pred)
-
-                    save_image(val_input, os.path.join(save_dir, f"{i}_{j}_input.png"))
-                    save_image(val_target, os.path.join(save_dir, f"{i}_{j}_target.png"))
-                    save_image(val_pred, os.path.join(save_dir, f"{i}_{j}_prediction.png"))
-
-                    combined = torch.cat([val_input, val_target, val_pred], dim=-1)
-                    writer = SummaryWriter(log_dir=self.log_dir)
-                    writer.add_images(f"validation/combined_{i}_{j}", combined, epoch)
-                    writer.close()
+        scale = max(total_count, 1)
+        return {name: value / scale for name, value in loss_sums.items()}
 
     def train(self, epochs):
         os.makedirs(self.log_dir, exist_ok=True)
@@ -170,20 +126,27 @@ class Trainer:
 
         epoch_bar = trange(1, epochs + 1, desc="Training", unit="epoch")
         for epoch in epoch_bar:
-            avg_loss = self.train_epoch()
-            epoch_bar.set_postfix({"MSE": f"{avg_loss:.6f}"})
-            writer.add_scalar("train/loss", avg_loss, epoch)
+            train_metrics = self.train_epoch()
+            avg_loss = train_metrics.get("total", 0.0)
+            epoch_bar.set_postfix({"loss": f"{avg_loss:.6f}"})
+            for name, value in train_metrics.items():
+                writer.add_scalar(f"train/{name}", value, epoch)
+
+            if self.validation_dataset is not None:
+                val_metrics = self.val_epoch()
+                for name, value in val_metrics.items():
+                    writer.add_scalar(f"val/{name}", value, epoch)
 
             if self.scheduler is not None:
                 current_lr = self.optimizer.param_groups[0]["lr"]
                 writer.add_scalar("train/learning_rate", current_lr, epoch)
 
             if epoch % self.savepoint == 0:
-                self._save_validation_samples(epoch)
+                self.logger.save(epoch, self.model)
 
             if self.scheduler is not None:
                 self.scheduler.step()
-        self._save_validation_samples(epoch, final=True)
+        self.logger.save(epoch, self.model, final=True)
 
         writer.close()
         return self.model
