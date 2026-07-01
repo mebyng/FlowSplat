@@ -50,9 +50,7 @@ class AutoEncoderLoss(nn.Module):
         loss = self.mse_weight * loss_dict["mse"]
 
         if self.lpips_weight != 0.0:
-            loss_dict["lpips"] = self.lpips(
-                reconstruction, target, normalize=True
-            ).mean()  # TODO change this when we add normalization to dataset
+            loss_dict["lpips"] = self.lpips(reconstruction, target).mean()
             loss = loss + self.lpips_weight * loss_dict["lpips"]
 
         if self.latent_weight != 0.0:
