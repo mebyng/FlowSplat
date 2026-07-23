@@ -7,7 +7,7 @@ import torch.nn as nn
 class ResidualBlock(nn.Module):
     """Residual block used before and after downsampling operations."""
 
-    def __init__(self, channels, num_groups=8):
+    def __init__(self, channels, num_groups=4):
         super().__init__()
         self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
         self.norm1 = nn.GroupNorm(num_groups, channels)
@@ -38,18 +38,20 @@ class SimpleAutoEncoder(nn.Module):
     The latent representation has shape: (batch, latent_dim, height//4, width//4)
     """
 
-    def __init__(self, in_channels=3, latent_dim=64):
+    def __init__(self, in_channels=3, latent_dim=4, noise_sigma=0.001):
         """
         Args:
             in_channels: Number of input channels (e.g., 3 for RGB)
             latent_dim: Number of channels in the bottleneck/latent space
+            noise_sigma: Noise scale to be added during training
         """
         super().__init__()
+        self.noise_sigma = noise_sigma
 
         # Initial convolution, then residual block before first downsample
         self.initial_conv = nn.Sequential(
             nn.Conv2d(in_channels, 16, kernel_size=3, padding=1),
-            nn.GroupNorm(8, 16),
+            nn.GroupNorm(4, 16),
             nn.SiLU(inplace=True),
         )
         self.res_before_down1 = ResidualBlock(16)
@@ -57,7 +59,7 @@ class SimpleAutoEncoder(nn.Module):
         # First downsample and residual block after it
         self.down1 = nn.Sequential(
             nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
-            nn.GroupNorm(8, 32),
+            nn.GroupNorm(4, 32),
             nn.SiLU(inplace=True),
         )
         self.res_after_down1 = ResidualBlock(32)
@@ -65,21 +67,21 @@ class SimpleAutoEncoder(nn.Module):
         # Second downsample and residual block after it
         self.down2 = nn.Sequential(
             nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
-            nn.GroupNorm(8, 64),
+            nn.GroupNorm(4, 64),
             nn.SiLU(inplace=True),
         )
-        self.res_after_down2 = ResidualBlock(latent_dim)
+        self.res_after_down2 = ResidualBlock(64)
 
         self.down3 = nn.Sequential(
             nn.Conv2d(64, 64, kernel_size=3, stride=2, padding=1),
-            nn.GroupNorm(8, 64),
+            nn.GroupNorm(4, 64),
             nn.SiLU(inplace=True),
         )
-        self.res_after_down3 = ResidualBlock(latent_dim)
+        self.res_after_down3 = ResidualBlock(64)
 
         self.down4 = nn.Sequential(
             nn.Conv2d(64, latent_dim, kernel_size=3, stride=2, padding=1),
-            nn.GroupNorm(8, latent_dim),
+            nn.GroupNorm(4, latent_dim),
             nn.SiLU(inplace=True),
         )
         self.res_after_down4 = ResidualBlock(latent_dim)
@@ -88,7 +90,7 @@ class SimpleAutoEncoder(nn.Module):
         self.up1 = nn.Sequential(
             nn.Upsample(scale_factor=2, mode="nearest"),
             nn.Conv2d(latent_dim, 64, kernel_size=3, padding=1),
-            nn.GroupNorm(8, 64),
+            nn.GroupNorm(4, 64),
             nn.SiLU(inplace=True),
         )
         self.res_after_up1 = ResidualBlock(64)
@@ -96,7 +98,7 @@ class SimpleAutoEncoder(nn.Module):
         self.up2 = nn.Sequential(
             nn.Upsample(scale_factor=2, mode="nearest"),
             nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.GroupNorm(8, 64),
+            nn.GroupNorm(4, 64),
             nn.SiLU(inplace=True),
         )
         self.res_after_up2 = ResidualBlock(64)
@@ -104,7 +106,7 @@ class SimpleAutoEncoder(nn.Module):
         self.up3 = nn.Sequential(
             nn.Upsample(scale_factor=2, mode="nearest"),
             nn.Conv2d(64, 32, kernel_size=3, padding=1),
-            nn.GroupNorm(8, 32),
+            nn.GroupNorm(4, 32),
             nn.SiLU(inplace=True),
         )
         self.res_after_up3 = ResidualBlock(32)
@@ -112,7 +114,7 @@ class SimpleAutoEncoder(nn.Module):
         self.up4 = nn.Sequential(
             nn.Upsample(scale_factor=2, mode="nearest"),
             nn.Conv2d(32, 16, kernel_size=3, padding=1),
-            nn.GroupNorm(8, 16),
+            nn.GroupNorm(4, 16),
             nn.SiLU(inplace=True),
         )
         self.res_after_up4 = ResidualBlock(16)
@@ -159,5 +161,9 @@ class SimpleAutoEncoder(nn.Module):
     def forward(self, x):
         """Full autoencoder forward pass."""
         z = self.encode(x)
+
+        if self.training:
+            z = z + self.noise_sigma * torch.randn_like(z)
+
         reconstruction = self.decode(z)
         return reconstruction, z

@@ -101,7 +101,9 @@ class Trainer:
         self.model.eval()
         with torch.no_grad():
             prediction = self.model.generate(input, plucker)
-            loss, loss_dict = self.model.criterion(prediction, target)
+            loss, loss_dict = self.model.criterion(
+                prediction, target
+            )  # TODO does not work for AE
         return loss_dict, target.shape[0]
 
     def train_epoch(self):
@@ -146,10 +148,10 @@ class Trainer:
             for name, value in train_metrics.items():
                 writer.add_scalar(f"train/{name}", value, epoch)
 
-            if self.validation_dataset is not None:
-                val_metrics = self.val_epoch()
-                for name, value in val_metrics.items():
-                    writer.add_scalar(f"val/{name}", value, epoch)
+            # if self.validation_dataset is not None:
+            #     val_metrics = self.val_epoch()
+            #     for name, value in val_metrics.items():
+            #         writer.add_scalar(f"val/{name}", value, epoch)
 
             if self.scheduler is not None:
                 current_lr = self.optimizer.param_groups[0]["lr"]
