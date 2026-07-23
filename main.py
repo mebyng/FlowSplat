@@ -1,6 +1,7 @@
 import argparse
 import os
 from datetime import datetime
+from pathlib import Path
 
 import torch
 
@@ -60,7 +61,50 @@ def parse_args():
         default=None,
         help="Optional name for this training run (appended to logdir)",
     )
+    parser.add_argument(
+        "--resume-from",
+        type=str,
+        default=None,
+        help="Optional name of a previous run whose checkpoint should be loaded before training",
+    )
     return parser.parse_args()
+
+
+def resolve_checkpoint_path(logdir: str, run_name: str | None):
+    if not run_name:
+        return None
+
+    candidate = Path(run_name)
+    if candidate.is_file():
+        return str(candidate)
+
+    if candidate.is_absolute():
+        run_dir = candidate
+    else:
+        run_dir = Path(logdir) / run_name
+
+    final_checkpoint = run_dir / "final" / "model_checkpoint.pth"
+    if final_checkpoint.exists():
+        return str(final_checkpoint)
+
+    epoch_dirs = sorted(
+        [path for path in run_dir.iterdir() if path.is_dir() and path.name.startswith("epoch_")],
+        key=lambda path: int(path.name.split("_")[-1]),
+        reverse=True,
+    )
+
+    for epoch_dir in epoch_dirs:
+        checkpoint_path = epoch_dir / "model_checkpoint.pth"
+        if checkpoint_path.exists():
+            return str(checkpoint_path)
+
+    root_checkpoint = run_dir / "model_checkpoint.pth"
+    if root_checkpoint.exists():
+        return str(root_checkpoint)
+
+    raise FileNotFoundError(
+        f"Could not find a checkpoint for run '{run_name}' under {run_dir}"
+    )
 
 
 def main():
@@ -141,6 +185,11 @@ def main():
         log_dir = os.path.join(args.logdir, f"run_{timestamp}")
 
     print(f"TensorBoard logs will be written to: {log_dir}")
+
+    if args.resume_from:
+        checkpoint_path = resolve_checkpoint_path(args.logdir, args.resume_from)
+        print(f"Loading checkpoint from: {checkpoint_path}")
+        model.load(checkpoint_path)
 
     trainer = Trainer(
         dataset=dataset,
