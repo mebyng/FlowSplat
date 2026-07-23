@@ -36,10 +36,8 @@ def generate_encoding(
             device = torch.device("cpu")
     autoencoder.eval()
 
-    for scene_dir, image_list in dataset.scene_info.items():
-        encoding_dir = scene_dir / output_dirname
-        encoding_dir.mkdir(exist_ok=True)
-
+    scene_rows = {}
+    for scene_dir in dataset.scene_info:
         csv_path = scene_dir / "camera_matrices.csv"
         with open(csv_path, newline="") as f:
             reader = csv.DictReader(f)
@@ -49,15 +47,28 @@ def generate_encoding(
         if "encoded_filename" not in fieldnames:
             fieldnames = fieldnames + ["encoded_filename"]
 
-        for image_path, _ in image_list:
-            encoding_path = encoding_dir / f"{image_path.stem}.pt"
-            if not overwrite and encoding_path.exists():
-                continue
-            image = dataset._load_image(image_path).unsqueeze(0).to(device)
-            with torch.no_grad():
-                encoding = autoencoder.encode(image)
-            torch.save(encoding.cpu(), encoding_path)
+        scene_rows[scene_dir] = (rows, fieldnames)
 
+    for sample_idx in range(len(dataset)):
+        scene_dir, img_idx = dataset.samples[sample_idx]
+        sample = dataset[sample_idx]
+        if not isinstance(sample, torch.Tensor):
+            continue
+
+        image_path = dataset.scene_info[scene_dir][img_idx][0]
+        encoding_dir = scene_dir / output_dirname
+        encoding_dir.mkdir(exist_ok=True)
+        encoding_path = encoding_dir / f"{image_path.stem}.pt"
+        if not overwrite and encoding_path.exists():
+            continue
+
+        image = sample.unsqueeze(0).to(device)
+        with torch.no_grad():
+            encoding = autoencoder.encode(image)
+        torch.save(encoding.cpu(), encoding_path)
+
+    for scene_dir, (rows, fieldnames) in scene_rows.items():
+        csv_path = scene_dir / "camera_matrices.csv"
         for row in rows:
             filename = row.get("filename")
             if filename:
