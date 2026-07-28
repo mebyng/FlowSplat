@@ -186,11 +186,6 @@ def main():
 
     print(f"TensorBoard logs will be written to: {log_dir}")
 
-    if args.resume_from:
-        checkpoint_path = resolve_checkpoint_path(args.logdir, args.resume_from)
-        print(f"Loading checkpoint from: {checkpoint_path}")
-        model.load(checkpoint_path)
-
     trainer = Trainer(
         dataset=dataset,
         model=model,
@@ -204,6 +199,11 @@ def main():
         log_dir=log_dir,
         resolution=resolution,
     )
+
+    if args.resume_from:
+        checkpoint_path = resolve_checkpoint_path(args.logdir, args.resume_from)
+        print(f"Loading checkpoint from: {checkpoint_path}")
+        trainer.load_checkpoint(checkpoint_path)
 
     trainer.train(epochs=args.epochs)
 

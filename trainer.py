@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
@@ -136,6 +137,50 @@ class Trainer:
         scale = max(total_count, 1)
         return {name: value / scale for name, value in loss_sums.items()}
 
+    def _checkpoint_dir(self, epoch: int | None = None, final: bool = False) -> Path:
+        if final:
+            return Path(self.log_dir) / "final"
+        if epoch is None:
+            raise ValueError("epoch is required when final=False")
+        return Path(self.log_dir) / f"epoch_{epoch:05d}"
+
+    def _checkpoint_path(self, epoch: int | None = None, final: bool = False) -> Path:
+        return self._checkpoint_dir(epoch=epoch, final=final) / "model_checkpoint.pth"
+
+    def save_checkpoint(
+        self, epoch: int | None = None, final: bool = False, path: str | None = None
+    ):
+        save_path = (
+            Path(path)
+            if path is not None
+            else self._checkpoint_path(epoch=epoch, final=final)
+        )
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+
+        checkpoint = {
+            "model_state_dict": self.model.model.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+        }
+        # if self.scheduler is not None:
+        #     checkpoint["scheduler_state_dict"] = self.scheduler.state_dict()
+
+        torch.save(checkpoint, save_path)
+        return save_path
+
+    def load_checkpoint(self, path: str):
+        checkpoint_path = Path(path)
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+
+        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+            self.model.model.load_state_dict(checkpoint["model_state_dict"])
+            self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            # if self.scheduler is not None and "scheduler_state_dict" in checkpoint:
+            #     self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        else:
+            self.model.model.load_state_dict(checkpoint)
+
+        return checkpoint
+
     def train(self, epochs):
         os.makedirs(self.log_dir, exist_ok=True)
         writer = SummaryWriter(log_dir=self.log_dir)
@@ -158,10 +203,12 @@ class Trainer:
                 writer.add_scalar("train/learning_rate", current_lr, epoch)
 
             if epoch % self.savepoint == 0:
+                self.save_checkpoint(epoch=epoch)
                 self.logger.save(epoch, self.model)
 
             if self.scheduler is not None:
                 self.scheduler.step()
+        self.save_checkpoint(epoch=epoch, final=True)
         self.logger.save(epoch, self.model, final=True)
 
         writer.close()

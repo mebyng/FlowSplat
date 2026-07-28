@@ -64,7 +64,6 @@ class SampleLogger:
     def save(self, epoch: int, model: torch.nn.Module, final: bool = False):
         save_dir = self.log_path / ("final" if final else f"epoch_{epoch:05d}")
         save_dir.mkdir(parents=True, exist_ok=True)
-        model.save(str(save_dir / "model_checkpoint.pth"))
 
         writer = SummaryWriter(log_dir=str(self.log_path))
         device = model.device()
