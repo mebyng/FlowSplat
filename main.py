@@ -42,9 +42,16 @@ def parse_args():
     parser.add_argument(
         "--mode",
         type=str,
-        default="rotate",
+        default="generate",
         choices=["rotate", "generate", "encode"],
         help="Training mode: 'rotate' for learning rotations, 'generate' for learning to generate views directly (default: 'generate')",
+    )
+    parser.add_argument(
+        "--rotation-encoding",
+        type=str,
+        default="matrix",
+        choices=["plucker", "matrix"],
+        help="Type of rotation encoding to use (default: 'matrix')",
     )
     parser.add_argument(
         "--savepoint",
@@ -67,6 +74,11 @@ def parse_args():
         default=None,
         help="Optional name of a previous run whose checkpoint should be loaded before training",
     )
+    parser.add_argument(
+        "--use-encoding",
+        action="store_true",
+        help="Whether to use AE encoding",
+    )
     return parser.parse_args()
 
 
@@ -88,7 +100,11 @@ def resolve_checkpoint_path(logdir: str, run_name: str | None):
         return str(final_checkpoint)
 
     epoch_dirs = sorted(
-        [path for path in run_dir.iterdir() if path.is_dir() and path.name.startswith("epoch_")],
+        [
+            path
+            for path in run_dir.iterdir()
+            if path.is_dir() and path.name.startswith("epoch_")
+        ],
         key=lambda path: int(path.name.split("_")[-1]),
         reverse=True,
     )
@@ -110,21 +126,27 @@ def resolve_checkpoint_path(logdir: str, run_name: str | None):
 def main():
     args = parse_args()
 
-    use_encoding = args.mode != "encode"
     dataset = ViewDataset(
-        args.dataset_path, split="training", mode=args.mode, use_encoding=use_encoding
+        args.dataset_path,
+        split="training",
+        mode=args.mode,
+        use_encoding=args.use_encoding,
     )
     val_dataset = ViewDataset(
         args.dataset_path,
         split="validation",
         mode=args.mode,
         random_matching=False,
-        use_encoding=use_encoding,
+        use_encoding=args.use_encoding,
     )  # Use deterministic matching for validation
     if args.mode == "generate":
-        out_channels = 64 if use_encoding else 3
-        in_channels = out_channels + 72  # 72 for camera encoding
-        resolution = 32 if use_encoding else 128
+        out_channels = 4 if args.use_encoding else 3
+        in_channels = out_channels + 3
+        if args.rotation_encoding == "plucker":
+            in_channels += 72
+        elif args.rotation_encoding == "matrix":
+            in_channels += 16
+        resolution = 32 if args.use_encoding else 128
         model = FlowWrapper(
             RotationConditionedUNetRes(
                 in_channels=in_channels, out_channels=out_channels
@@ -134,9 +156,13 @@ def main():
         autoencoder = SimpleAutoEncoder().cuda().eval()
         autoencoder.load("weight_checkpoints/SimpleAutoEncoder_medium.pth")
     elif args.mode == "rotate":
-        out_channels = 64 if use_encoding else 3
-        in_channels = out_channels + 72  # 72 for camera encoding
-        resolution = 32 if use_encoding else 128
+        out_channels = 4 if args.use_encoding else 3
+        in_channels = out_channels
+        if args.rotation_encoding == "plucker":
+            in_channels += 72
+        elif args.rotation_encoding == "matrix":
+            in_channels += 16
+        resolution = 32 if args.use_encoding else 128
         model = RegressionWrapper(
             RotationConditionedUNetRes(
                 in_channels=in_channels, out_channels=out_channels
@@ -179,10 +205,10 @@ def main():
         scheduler = None
 
     if args.run_name:
-        log_dir = os.path.join(args.logdir, args.run_name)
+        log_dir = os.path.join(args.logdir, args.mode, args.run_name)
     else:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_dir = os.path.join(args.logdir, f"run_{timestamp}")
+        log_dir = os.path.join(args.logdir, args.mode, f"run_{timestamp}")
 
     print(f"TensorBoard logs will be written to: {log_dir}")
 
@@ -201,9 +227,11 @@ def main():
     )
 
     if args.resume_from:
-        checkpoint_path = resolve_checkpoint_path(args.logdir, args.resume_from)
+        checkpoint_path = resolve_checkpoint_path(
+            os.path.join(args.logdir, args.mode), args.resume_from
+        )
         print(f"Loading checkpoint from: {checkpoint_path}")
-        trainer.load_checkpoint(checkpoint_path)
+        trainer.load_checkpoint(checkpoint_path, lr=args.lr)
 
     trainer.train(epochs=args.epochs)
 

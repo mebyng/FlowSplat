@@ -5,7 +5,6 @@ from torch.utils.tensorboard import SummaryWriter
 from torchvision.utils import save_image
 
 from data import ViewDataset
-from utils import compute_plucker
 
 
 class SampleLogger:
@@ -61,76 +60,31 @@ class SampleLogger:
             for _ in range(self.n_samples)
         ]
 
-    def save(self, epoch: int, model: torch.nn.Module, final: bool = False):
+    def save(self, results, epoch: int, final: bool = False):
         save_dir = self.log_path / ("final" if final else f"epoch_{epoch:05d}")
         save_dir.mkdir(parents=True, exist_ok=True)
 
         writer = SummaryWriter(log_dir=str(self.log_path))
-        device = model.device()
-        random_inputs = [tensor.to(device) for tensor in self.random_inputs]
-
-        for name, dataset in self.datasets:
+        for name, data in results.items():
             subset_dir = save_dir / name
             subset_dir.mkdir(parents=True, exist_ok=True)
-            indices = self.sample_indices[name]
+            for j, (input, target, pred) in enumerate(
+                zip(data["input"], data["target"], data["pred"])
+            ):
+                for i in range(input.shape[0]):
+                    val_input = input[i].unsqueeze(0)
+                    val_target = target[i].unsqueeze(0)
+                    val_pred = pred[i].unsqueeze(0)
 
-            for i in indices:
-                # In rotate mode, there's one fixed target per input, so j is meaningless
-                # In generate/encode mode, j represents different random samples
-                n_loops = 1 if self.mode != "generate" else self.n_samples
+                    save_image(val_input, str(subset_dir / f"{i}_{j}_input.png"))
+                    save_image(val_target, str(subset_dir / f"{i}_{j}_target.png"))
+                    save_image(val_pred, str(subset_dir / f"{i}_{j}_prediction.png"))
 
-                for j in range(n_loops):
-                    with torch.no_grad():
-                        if self.mode == "rotate":
-                            (
-                                val_input,
-                                val_target,
-                                val_target_extrinsics,
-                                val_intrinsics,
-                            ) = dataset[i]
-                            val_input = val_input.unsqueeze(0).to(device)
-                            val_target = val_target.unsqueeze(0).to(device)
-                            val_plucker = compute_plucker(
-                                val_target_extrinsics.unsqueeze(0).to(device),
-                                val_intrinsics.unsqueeze(0).to(device),
-                                height=self.resolution,
-                                width=self.resolution,
-                            )
-                        elif self.mode == "generate":
-                            val_target, val_extrinsics, val_intrinsics = dataset[i]
-                            val_target = val_target.unsqueeze(0).to(device)
-                            val_plucker = compute_plucker(
-                                val_extrinsics.unsqueeze(0).to(device),
-                                val_intrinsics.unsqueeze(0).to(device),
-                                height=self.resolution,
-                                width=self.resolution,
-                            )
-                            val_input = random_inputs[j]
-                        elif self.mode == "encode":
-                            val_input = dataset[i].unsqueeze(0).to(device)
-                            val_target = val_input
-                            val_plucker = None
-                        else:
-                            raise ValueError(f"Invalid mode: {self.mode}")
-
-                        val_pred = model.generate(val_input, val_plucker)
-
-                        if dataset.use_encoding:
-                            if self.autoencoder is None:
-                                raise ValueError(
-                                    "encoding is used but no autoencoder provided"
-                                )
-                            val_input = self.autoencoder.decode(val_input)
-                            val_target = self.autoencoder.decode(val_target)
-                            val_pred = self.autoencoder.decode(val_pred)
-
-                        save_image(val_input, str(subset_dir / f"{i}_{j}_input.png"))
-                        save_image(val_target, str(subset_dir / f"{i}_{j}_target.png"))
-                        save_image(
-                            val_pred, str(subset_dir / f"{i}_{j}_prediction.png")
-                        )
-
-                        combined = torch.cat([val_input, val_target, val_pred], dim=-1)
-                        writer.add_images(f"{name}/combined_{i}_{j}", combined, epoch)
+                    combined = torch.cat(
+                        [val_input[:, :3], val_target, val_pred], dim=-1
+                    )
+                    writer.add_images(
+                        f"images_{name}/combined_{i}_{j}", combined, epoch
+                    )
 
         writer.close()

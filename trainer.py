@@ -20,6 +20,7 @@ class Trainer:
         validation_dataset: ViewDataset | None = None,
         autoencoder: torch.nn.Module | None = None,
         mode: str = "generate",
+        rotation_encoding: str = "matrix",
         batch_size: int = 32,
         scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
         savepoint: int = 10,
@@ -34,6 +35,7 @@ class Trainer:
         self.model = model
         self.optimizer = optimizer
         self.mode = mode
+        self.rotation_encoding = rotation_encoding
         self.batch_size = batch_size
         self.scheduler = scheduler
         self.savepoint = savepoint
@@ -66,42 +68,56 @@ class Trainer:
             target = target.to(self.model.device())
             target_extrinsics = target_extrinsics.to(self.model.device())
             intrinsics = intrinsics.to(self.model.device())
-            plucker = compute_plucker(
-                target_extrinsics,
-                intrinsics,
-                height=self.resolution,
-                width=self.resolution,
-            )
+            if self.rotation_encoding == "matrix":
+                rotation = target_extrinsics.reshape(-1, 16, 1, 1).repeat(
+                    1, 1, self.resolution, self.resolution
+                )
+            elif self.rotation_encoding == "plucker":
+                rotation = compute_plucker(
+                    target_extrinsics,
+                    intrinsics,
+                    height=self.resolution,
+                    width=self.resolution,
+                )
         elif self.mode == "generate":
-            target, extrinsics, intrinsics = batch
+            input, target, target_extrinsics, intrinsics = batch
+            input = input.to(self.model.device())
+            input = torch.cat([input, torch.randn_like(input)], dim=1)
             target = target.to(self.model.device())
-            extrinsics = extrinsics.to(self.model.device())
+            target_extrinsics = target_extrinsics.to(self.model.device())
             intrinsics = intrinsics.to(self.model.device())
-            input = torch.randn_like(target)
-            plucker = compute_plucker(
-                extrinsics, intrinsics, height=self.resolution, width=self.resolution
-            )
+            if self.rotation_encoding == "matrix":
+                rotation = target_extrinsics.reshape(-1, 16, 1, 1).repeat(
+                    1, 1, self.resolution, self.resolution
+                )
+            elif self.rotation_encoding == "plucker":
+                rotation = compute_plucker(
+                    target_extrinsics,
+                    intrinsics,
+                    height=self.resolution,
+                    width=self.resolution,
+                )
         elif self.mode == "encode":
             input = batch.to(self.model.device())
             target = input
-            plucker = None
+            rotation = None
         else:
             raise ValueError(f"Invalid mode: {self.mode}")
-        return input, plucker, target
+        return input, rotation, target
 
     def train_step(self, batch):
-        input, plucker, target = self._prepare_batch(batch)
-        loss, loss_dict = self.model.train_step(input, plucker, target)
+        input, rotation, target = self._prepare_batch(batch)
+        loss, loss_dict = self.model.train_step(input, rotation, target)
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
         return loss_dict, target.shape[0]
 
     def val_step(self, batch):
-        input, plucker, target = self._prepare_batch(batch)
+        input, rotation, target = self._prepare_batch(batch)
         self.model.eval()
         with torch.no_grad():
-            prediction = self.model.generate(input, plucker)
+            prediction = self.model.generate(input, rotation)
             loss, loss_dict = self.model.criterion(
                 prediction, target
             )  # TODO does not work for AE
@@ -137,6 +153,55 @@ class Trainer:
         scale = max(total_count, 1)
         return {name: value / scale for name, value in loss_sums.items()}
 
+    def log_images(self, epoch: int, final: bool = False):
+        datasets = [("train", self.dataset)]
+        if self.validation_dataset is not None:
+            datasets.append(("validation", self.validation_dataset))
+
+        results = {}
+        for name, dataset in datasets:
+            indices = self.logger.sample_indices[name]
+            # In rotate mode, there's one fixed target per input, so j is meaningless
+            # In generate/encode mode, j represents different random samples
+            n_loops = 1 if self.mode != "generate" else self.logger.n_samples
+            results[name] = {"input": [], "target": [], "pred": []}
+
+            batch = dataset.getitems(indices)
+            input, rotation, target = self._prepare_batch(batch)
+            for j in range(n_loops):
+                with torch.no_grad():
+                    if self.mode == "generate":
+                        # For generation, we need to sample different random inputs
+                        noise = (
+                            self.logger.random_inputs[j]
+                            .to(input.device)
+                            .repeat(input.shape[0], 1, 1, 1)
+                        )
+                        input = torch.cat(
+                            [
+                                input[:, :3],
+                                noise,
+                            ],
+                            dim=1,
+                        )
+
+                    pred = self.model.generate(input, rotation)
+
+                    if dataset.use_encoding:
+                        if self.autoencoder is None:
+                            raise ValueError(
+                                "encoding is used but no autoencoder provided"
+                            )
+                        input = self.autoencoder.decode(input)
+                        target = self.autoencoder.decode(target)
+                        pred = self.autoencoder.decode(pred)
+
+                    results[name]["input"].append(input[:, :3])
+                    results[name]["target"].append(target)
+                    results[name]["pred"].append(pred)
+
+        self.logger.save(results, epoch, final=final)
+
     def _checkpoint_dir(self, epoch: int | None = None, final: bool = False) -> Path:
         if final:
             return Path(self.log_dir) / "final"
@@ -161,16 +226,17 @@ class Trainer:
             "model_state_dict": self.model.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
         }
-        # if self.scheduler is not None:
-        #     checkpoint["scheduler_state_dict"] = self.scheduler.state_dict()
+        if self.scheduler is not None:
+            checkpoint["scheduler_state_dict"] = self.scheduler.state_dict()
 
         torch.save(checkpoint, save_path)
         return save_path
 
-    def load_checkpoint(self, path: str):
+    def load_checkpoint(self, path: str, lr: float | None = None):
         checkpoint_path = Path(path)
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
 
+        scheduler_loaded = False
         if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
             self.model.model.load_state_dict(checkpoint["model_state_dict"])
             self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
@@ -178,6 +244,10 @@ class Trainer:
             #     self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         else:
             self.model.model.load_state_dict(checkpoint)
+
+        if lr is not None and not scheduler_loaded:
+            for param_group in self.optimizer.param_groups:
+                param_group["lr"] = lr
 
         return checkpoint
 
@@ -204,12 +274,12 @@ class Trainer:
 
             if epoch % self.savepoint == 0:
                 self.save_checkpoint(epoch=epoch)
-                self.logger.save(epoch, self.model)
+                self.log_images(epoch, final=False)
 
             if self.scheduler is not None:
                 self.scheduler.step()
         self.save_checkpoint(epoch=epoch, final=True)
-        self.logger.save(epoch, self.model, final=True)
+        self.log_images(epoch, final=True)
 
         writer.close()
         return self.model
