@@ -24,31 +24,34 @@ class FlowWrapper(nn.Module):
         self.model.load(path)
 
     def generate(
-        self, input: torch.Tensor, plucker: torch.Tensor, num_steps: int = 10
+        self, input: torch.Tensor, rotation: torch.Tensor, num_steps: int = 10
     ) -> torch.Tensor:
         """Forward pass through the flow matching model."""
         dt = 1.0 / num_steps
-        curr = input
+        curr = input[:, 3:]
+        cond = input[:, :3]
         for i in range(num_steps):
             t = torch.full((input.size(0), 1), i * dt, device=input.device)
-            inp = torch.cat([curr, plucker], dim=1)
+            inp = torch.cat([curr, cond, rotation], dim=1)
             curr = curr + self.model(inp, t) * dt
         return curr
 
     def train_step(
-        self, input: torch.Tensor, plucker: torch.Tensor, target: torch.Tensor
+        self, input: torch.Tensor, rotation: torch.Tensor, target: torch.Tensor
     ):
         """Perform a single training step."""
         self.train()
         t = torch.rand(target.size(0), 1, device=target.device)
+        noise = input[:, 3:]
+        cond = input[:, :3]
 
         interp = t.unsqueeze(-1).unsqueeze(-1)
-        x_t = (1 - interp) * input + interp * target
-        v_target = target - input
+        x_t = (1 - interp) * noise + interp * target
+        v_target = target - noise
 
         x_t = torch.cat(
-            [x_t, plucker], dim=1
-        )  # Concatenate input with Plucker coordinates
+            [x_t, cond, rotation], dim=1
+        )  # Concatenate input with rotation encoding
 
         pred = self.model(x_t, t)
         loss, loss_dict = self.criterion(pred, v_target)
@@ -81,16 +84,16 @@ class RegressionWrapper(nn.Module):
         self.model.load(path)
 
     def generate(
-        self, input: torch.Tensor, plucker: torch.Tensor, num_steps: int = 10
+        self, input: torch.Tensor, rotation: torch.Tensor, num_steps: int = 10
     ) -> torch.Tensor:
         """Forward pass through the regression model."""
 
         if self.mode == "rotate":
             input = torch.cat(
-                [input, plucker], dim=1
+                [input, rotation], dim=1
             )  # Concatenate input and target images for rotation mode
         elif self.mode == "generate":
-            input = plucker  # Use Plucker coordinates directly for generation mode
+            input = rotation  # Use rotation encoding directly for generation mode
         elif self.mode == "encode":
             input = input  # Use input image directly for encoding mode
         else:
@@ -102,17 +105,17 @@ class RegressionWrapper(nn.Module):
             return self.model(input)
 
     def train_step(
-        self, input: torch.Tensor, plucker: torch.Tensor, target: torch.Tensor
+        self, input: torch.Tensor, rotation: torch.Tensor, target: torch.Tensor
     ):
         """Perform a single training step."""
         self.train()
 
         if self.mode == "rotate":
             input = torch.cat(
-                [input, plucker], dim=1
+                [input, rotation], dim=1
             )  # Concatenate input and target images for rotation mode
         elif self.mode == "generate":
-            input = plucker  # Use Plucker coordinates directly for generation mode
+            input = rotation  # Use rotation encoding directly for generation mode
         elif self.mode == "encode":
             input = input  # Use input image directly for encoding mode
         else:

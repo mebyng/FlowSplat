@@ -7,6 +7,7 @@ import numpy as np
 import torch
 from PIL import Image
 from torch.utils.data import Dataset
+from torch.utils.data._utils.collate import default_collate
 from torchvision import transforms
 
 from utils.camera_utils import default_align_cameras
@@ -142,12 +143,25 @@ class ViewDataset(Dataset):
             input_image = self._load_image(input_path, self.transform)
             target_image = self._load_image(target_path, self.target_transform)
 
-        if self.mode == "rotate":
+        if self.mode == "rotate" or self.mode == "generate":
             target_pose_aligned = default_align_cameras(input_pose, target_pose)
             return input_image, target_image, target_pose_aligned, intrinsics
-        elif self.mode == "generate":
-            return target_image, target_pose, intrinsics
         elif self.mode == "encode":
             return input_image
         else:
             raise ValueError(f"Invalid mode: {self.mode}")
+
+    def getitems(self, indices):
+        if isinstance(indices, torch.Tensor):
+            if indices.ndim == 0:
+                return self[indices.item()]
+            indices = indices.tolist()
+        elif isinstance(indices, np.ndarray):
+            if indices.ndim == 0:
+                return self[int(indices.item())]
+            indices = indices.tolist()
+
+        if isinstance(indices, (int, np.integer)):
+            return self[int(indices)]
+
+        return default_collate([self[idx] for idx in indices])
