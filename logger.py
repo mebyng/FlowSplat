@@ -1,4 +1,6 @@
 from pathlib import Path
+import json
+from typing import Any
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -18,6 +20,7 @@ class SampleLogger:
         mode: str,
         resolution: int,
         autoencoder: torch.nn.Module | None = None,
+        metadata: dict[str, Any] | None = None,
     ):
         if n_images <= 0 or n_samples <= 0:
             raise ValueError("n_images and n_samples must be positive integers")
@@ -29,9 +32,13 @@ class SampleLogger:
         self.n_images = n_images
         self.n_samples = n_samples
         self.log_path = Path(log_path)
+        self.log_path.mkdir(parents=True, exist_ok=True)
         self.mode = mode
         self.resolution = resolution
         self.autoencoder = autoencoder
+        self.writer = SummaryWriter(log_dir=str(self.log_path))
+        if metadata:
+            self.log_metadata(metadata)
         self.sample_indices = {
             name: self._select_sample_indices(dataset, name)
             for name, dataset in self.datasets
@@ -39,6 +46,7 @@ class SampleLogger:
         self.random_inputs = (
             self._create_random_inputs() if self.mode == "generate" else []
         )
+        self.log_path.mkdir(parents=True, exist_ok=True)
 
     def _select_sample_indices(self, dataset: ViewDataset, name: str):
         dataset_length = len(dataset)
@@ -60,11 +68,27 @@ class SampleLogger:
             for _ in range(self.n_samples)
         ]
 
+    def log_metrics(self, metrics: dict[str, float], epoch: int, subset: str = "train"):
+        for name, value in metrics.items():
+            self.writer.add_scalar(f"{subset}/{name}", value, epoch)
+
+    def log_metadata(self, metadata: dict[str, Any]) -> None:
+        metadata_json = json.dumps(metadata, indent=2, default=str)
+        metadata_path = self.log_path / "metadata.json"
+        metadata_path.write_text(metadata_json, encoding="utf-8")
+        self.writer.add_text("run/metadata", metadata_json, 0)
+
+    def checkpoint_dir(self, epoch: int | None = None, final: bool = False) -> Path:
+        if final:
+            return self.log_path / "final"
+        if epoch is None:
+            raise ValueError("epoch is required when final=False")
+        return self.log_path / f"epoch_{epoch:05d}"
+
     def save(self, results, epoch: int, final: bool = False):
-        save_dir = self.log_path / ("final" if final else f"epoch_{epoch:05d}")
+        save_dir = self.checkpoint_dir(epoch=epoch, final=final)
         save_dir.mkdir(parents=True, exist_ok=True)
 
-        writer = SummaryWriter(log_dir=str(self.log_path))
         for name, data in results.items():
             subset_dir = save_dir / name
             subset_dir.mkdir(parents=True, exist_ok=True)
@@ -83,8 +107,9 @@ class SampleLogger:
                     combined = torch.cat(
                         [val_input[:, :3], val_target, val_pred], dim=-1
                     )
-                    writer.add_images(
+                    self.writer.add_images(
                         f"images_{name}/combined_{i}_{j}", combined, epoch
                     )
 
-        writer.close()
+    def close(self):
+        self.writer.close()

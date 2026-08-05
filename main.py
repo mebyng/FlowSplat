@@ -212,17 +212,41 @@ def main():
 
     print(f"TensorBoard logs will be written to: {log_dir}")
 
+    metadata = vars(args).copy()
+    metadata.update(
+        {
+            "model_name": type(model).__name__,
+            "num_params": num_params,
+            "num_trainable": num_trainable,
+            "training_samples": len(dataset),
+            "validation_samples": len(val_dataset),
+            "log_dir": log_dir,
+        }
+    )
+
+    sample_logger = SampleLogger(
+        train_dataset=dataset,
+        validation_dataset=val_dataset,
+        n_images=args.savepoint if args.savepoint > 0 else 1,
+        n_samples=2,
+        log_path=log_dir,
+        mode=args.mode,
+        resolution=resolution,
+        autoencoder=autoencoder,
+        metadata=metadata,
+    )
+
     trainer = Trainer(
         dataset=dataset,
         model=model,
         optimizer=optimizer,
+        logger=sample_logger,
         validation_dataset=val_dataset,
         autoencoder=autoencoder,
         mode=args.mode,
         batch_size=args.batch_size,
         scheduler=scheduler,
         savepoint=args.savepoint,
-        log_dir=log_dir,
         resolution=resolution,
     )
 

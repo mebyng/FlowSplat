@@ -3,7 +3,6 @@ from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
 from tqdm import trange
 
 from data import ViewDataset
@@ -17,6 +16,7 @@ class Trainer:
         dataset: ViewDataset,
         model: torch.nn.Module,
         optimizer: torch.optim.Optimizer,
+        logger: SampleLogger,
         validation_dataset: ViewDataset | None = None,
         autoencoder: torch.nn.Module | None = None,
         mode: str = "generate",
@@ -24,10 +24,7 @@ class Trainer:
         batch_size: int = 32,
         scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
         savepoint: int = 10,
-        log_dir: str = "runs",
         resolution: int = 128,
-        validation_n_images: int = 5,
-        validation_n_samples: int = 2,
     ):
         self.dataset = dataset
         self.validation_dataset = validation_dataset
@@ -39,23 +36,13 @@ class Trainer:
         self.batch_size = batch_size
         self.scheduler = scheduler
         self.savepoint = savepoint
-        self.log_dir = log_dir
         self.resolution = resolution
+        self.logger = logger
 
         self.train_loader = DataLoader(
             self.dataset, batch_size=self.batch_size, shuffle=True
         )
         self.val_loader = None
-        self.logger = SampleLogger(
-            train_dataset=self.dataset,
-            validation_dataset=self.validation_dataset,
-            n_images=validation_n_images,
-            n_samples=validation_n_samples,
-            log_path=self.log_dir,
-            mode=self.mode,
-            resolution=self.resolution,
-            autoencoder=self.autoencoder,
-        )
         if self.validation_dataset is not None:
             self.val_loader = DataLoader(
                 self.validation_dataset, batch_size=self.batch_size, shuffle=False
@@ -202,23 +189,14 @@ class Trainer:
 
         self.logger.save(results, epoch, final=final)
 
-    def _checkpoint_dir(self, epoch: int | None = None, final: bool = False) -> Path:
-        if final:
-            return Path(self.log_dir) / "final"
-        if epoch is None:
-            raise ValueError("epoch is required when final=False")
-        return Path(self.log_dir) / f"epoch_{epoch:05d}"
-
-    def _checkpoint_path(self, epoch: int | None = None, final: bool = False) -> Path:
-        return self._checkpoint_dir(epoch=epoch, final=final) / "model_checkpoint.pth"
-
     def save_checkpoint(
         self, epoch: int | None = None, final: bool = False, path: str | None = None
     ):
         save_path = (
             Path(path)
             if path is not None
-            else self._checkpoint_path(epoch=epoch, final=final)
+            else self.logger.checkpoint_dir(epoch=epoch, final=final)
+            / "model_checkpoint.pth"
         )
         save_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -252,25 +230,22 @@ class Trainer:
         return checkpoint
 
     def train(self, epochs):
-        os.makedirs(self.log_dir, exist_ok=True)
-        writer = SummaryWriter(log_dir=self.log_dir)
-
         epoch_bar = trange(1, epochs + 1, desc="Training", unit="epoch")
         for epoch in epoch_bar:
             train_metrics = self.train_epoch()
             avg_loss = train_metrics.get("total", 0.0)
             epoch_bar.set_postfix({"loss": f"{avg_loss:.6f}"})
-            for name, value in train_metrics.items():
-                writer.add_scalar(f"train/{name}", value, epoch)
 
-            # if self.validation_dataset is not None:
-            #     val_metrics = self.val_epoch()
-            #     for name, value in val_metrics.items():
-            #         writer.add_scalar(f"val/{name}", value, epoch)
+            self.logger.log_metrics(train_metrics, epoch, subset="train")
+            if self.validation_dataset is not None:
+                val_metrics = self.val_epoch()
+                self.logger.log_metrics(val_metrics, epoch, subset="validation")
 
             if self.scheduler is not None:
                 current_lr = self.optimizer.param_groups[0]["lr"]
-                writer.add_scalar("train/learning_rate", current_lr, epoch)
+                self.logger.log_metrics(
+                    {"learning_rate": current_lr}, epoch, subset="train"
+                )
 
             if epoch % self.savepoint == 0:
                 self.save_checkpoint(epoch=epoch)
@@ -281,5 +256,5 @@ class Trainer:
         self.save_checkpoint(epoch=epoch, final=True)
         self.log_images(epoch, final=True)
 
-        writer.close()
+        self.logger.close()
         return self.model
