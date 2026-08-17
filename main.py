@@ -6,10 +6,13 @@ from pathlib import Path
 import torch
 
 from data import ViewDataset
+from logger import SampleLogger
 from models import (
     SimpleAutoEncoder,
     RegressionWrapper,
     RotationConditionedUNetRes,
+    CustomNet,
+    CustomNetSpatialRotation,
     FlowWrapper,
 )
 from trainer import Trainer
@@ -154,7 +157,7 @@ def main():
         ).cuda()
 
         autoencoder = SimpleAutoEncoder().cuda().eval()
-        autoencoder.load("weight_checkpoints/SimpleAutoEncoder_medium.pth")
+        autoencoder.load("weight_checkpoints/SimpleAutoEncoder_4_0001.pth")
     elif args.mode == "rotate":
         out_channels = 4 if args.use_encoding else 3
         in_channels = out_channels
@@ -164,14 +167,14 @@ def main():
             in_channels += 16
         resolution = 32 if args.use_encoding else 128
         model = RegressionWrapper(
-            RotationConditionedUNetRes(
+            CustomNetSpatialRotation(
                 in_channels=in_channels, out_channels=out_channels
             ),
             mode=args.mode,
         ).cuda()
 
         autoencoder = SimpleAutoEncoder().cuda().eval()
-        autoencoder.load("weight_checkpoints/SimpleAutoEncoder_medium.pth")
+        autoencoder.load("weight_checkpoints/SimpleAutoEncoder_4_0001.pth")
     elif args.mode == "encode":
         model = RegressionWrapper(SimpleAutoEncoder(), mode=args.mode).cuda()
         autoencoder = None
@@ -227,7 +230,7 @@ def main():
     sample_logger = SampleLogger(
         train_dataset=dataset,
         validation_dataset=val_dataset,
-        n_images=args.savepoint if args.savepoint > 0 else 1,
+        n_images=5,
         n_samples=2,
         log_path=log_dir,
         mode=args.mode,

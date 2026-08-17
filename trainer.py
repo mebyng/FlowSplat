@@ -113,6 +113,7 @@ class Trainer:
     def train_epoch(self):
         total_count = 0
         loss_sums = {}
+        self.model.train()
         for batch in self.train_loader:
             loss_dict, count = self.train_step(batch)
             total_count += count
@@ -129,13 +130,15 @@ class Trainer:
             raise ValueError("Validation dataset is not provided for val_epoch")
         total_count = 0
         loss_sums = {}
-        for batch in self.val_loader:
-            loss_dict, count = self.val_step(batch)
-            total_count += count
-            for name, value in loss_dict.items():
-                loss_sums[name] = (
-                    loss_sums.get(name, 0.0) + value.detach().item() * count
-                )
+        self.model.eval()
+        with torch.no_grad():
+            for batch in self.val_loader:
+                loss_dict, count = self.val_step(batch)
+                total_count += count
+                for name, value in loss_dict.items():
+                    loss_sums[name] = (
+                        loss_sums.get(name, 0.0) + value.detach().item() * count
+                    )
 
         scale = max(total_count, 1)
         return {name: value / scale for name, value in loss_sums.items()}
@@ -146,6 +149,7 @@ class Trainer:
             datasets.append(("validation", self.validation_dataset))
 
         results = {}
+        self.model.eval()
         for name, dataset in datasets:
             indices = self.logger.sample_indices[name]
             # In rotate mode, there's one fixed target per input, so j is meaningless
