@@ -33,18 +33,18 @@ def create_dataset(
 
 if __name__ == "__main__":
     create_dataset(
-        num_scenes=10,
-        num_views=100,
-        resolution=512,
+        num_scenes=100000,
+        num_views=10,
+        resolution=128,
         split="training",
-        output_dir="datasets/small_512",
+        output_dir="datasets/scenes_100000_10",
         random=True,
     )
     create_dataset(
-        num_scenes=1,
-        num_views=5,
-        resolution=512,
+        num_scenes=10,
+        num_views=10,
+        resolution=128,
         split="validation",
-        output_dir="datasets/small_512",
+        output_dir="datasets/scenes_100000_10",
         random=True,
     )

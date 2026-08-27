@@ -83,8 +83,10 @@ def generate_encoding(
 
 
 if __name__ == "__main__":
-    dataset_path = "datasets/small_512"
-    dataset = ViewDataset(dataset_path, split="training", mode="encode")
+    dataset_path = "datasets/single_512"
+    dataset_train = ViewDataset(dataset_path, split="training", mode="encode")
+    dataset_val = ViewDataset(dataset_path, split="validation", mode="encode")
     autoencoder = SimpleAutoEncoder().cuda()
-    autoencoder.load("weight_checkpoints/SimpleAutoEncoder_medium.pth")
-    generate_encoding(dataset, autoencoder, overwrite=True)
+    autoencoder.load("weight_checkpoints/SimpleAutoEncoder_4_0001.pth")
+    generate_encoding(dataset_train, autoencoder, overwrite=True)
+    generate_encoding(dataset_val, autoencoder, overwrite=True)
