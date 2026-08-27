@@ -8,6 +8,7 @@ from tqdm import trange
 from data import ViewDataset
 from utils import compute_plucker
 from logger import SampleLogger
+from utils.camera_utils import rotation_matrix_to_6d
 
 
 class Trainer:
@@ -59,6 +60,12 @@ class Trainer:
                 rotation = target_extrinsics.reshape(-1, 16, 1, 1).repeat(
                     1, 1, self.resolution, self.resolution
                 )
+            elif self.rotation_encoding == "6D":
+                rotation = (
+                    rotation_matrix_to_6d(target_extrinsics[:, :3, :3])
+                    .reshape(-1, 6, 1, 1)
+                    .repeat(1, 1, self.resolution, self.resolution)
+                )
             elif self.rotation_encoding == "plucker":
                 rotation = compute_plucker(
                     target_extrinsics,
@@ -76,6 +83,12 @@ class Trainer:
             if self.rotation_encoding == "matrix":
                 rotation = target_extrinsics.reshape(-1, 16, 1, 1).repeat(
                     1, 1, self.resolution, self.resolution
+                )
+            elif self.rotation_encoding == "6D":
+                rotation = (
+                    rotation_matrix_to_6d(target_extrinsics[:, :3, :3])
+                    .reshape(-1, 6, 1, 1)
+                    .repeat(1, 1, self.resolution, self.resolution)
                 )
             elif self.rotation_encoding == "plucker":
                 rotation = compute_plucker(
@@ -214,7 +227,9 @@ class Trainer:
         torch.save(checkpoint, save_path)
         return save_path
 
-    def load_checkpoint(self, path: str, lr: float | None = None):
+    def load_checkpoint(
+        self, path: str, continued: bool = False, lr: float | None = None
+    ):
         checkpoint_path = Path(path)
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
 
@@ -222,8 +237,12 @@ class Trainer:
         if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
             self.model.model.load_state_dict(checkpoint["model_state_dict"])
             self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-            # if self.scheduler is not None and "scheduler_state_dict" in checkpoint:
-            #     self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            if (
+                continued
+                and self.scheduler is not None
+                and "scheduler_state_dict" in checkpoint
+            ):
+                self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         else:
             self.model.model.load_state_dict(checkpoint)
 

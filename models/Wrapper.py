@@ -4,7 +4,7 @@ import torch.nn as nn
 from losses import AutoEncoderLoss, MSELoss
 
 
-class FlowWrapper(nn.Module):
+class FlowModel(nn.Module):
     """Simple Flow Matching model."""
 
     def __init__(self, model: nn.Module):
@@ -58,20 +58,14 @@ class FlowWrapper(nn.Module):
         return loss, loss_dict
 
 
-class RegressionWrapper(nn.Module):
+class RegressionModel(nn.Module):
     """Simple Regression model."""
 
-    def __init__(self, model: nn.Module, mode: str = "rotate"):
+    def __init__(self, model: nn.Module):
         super().__init__()
         self.model = model
-        self.mode = mode
 
-        if self.mode in ["rotate", "generate"]:
-            self.criterion = MSELoss()
-        elif self.mode == "encode":
-            self.criterion = AutoEncoderLoss(self.device())
-        else:
-            raise ValueError(f"Invalid mode: {self.mode}")
+        self.criterion = MSELoss()
 
     def device(self):
         """Return the device of the model parameters."""
@@ -88,21 +82,11 @@ class RegressionWrapper(nn.Module):
     ) -> torch.Tensor:
         """Forward pass through the regression model."""
 
-        if self.mode == "rotate":
-            input = torch.cat(
-                [input, rotation], dim=1
-            )  # Concatenate input and target images for rotation mode
-        elif self.mode == "generate":
-            input = rotation  # Use rotation encoding directly for generation mode
-        elif self.mode == "encode":
-            input = input  # Use input image directly for encoding mode
-        else:
-            raise ValueError(f"Invalid mode: {self.mode}")
+        # condition = torch.cat([input, rotation], dim=1)
+        condition = input
+        input = torch.zeros_like(input)
 
-        if self.mode == "encode":
-            return self.model(input)[0]
-        else:
-            return self.model(input)
+        return self.model(input, condition, rotation[:, :, 0, 0])
 
     def train_step(
         self, input: torch.Tensor, rotation: torch.Tensor, target: torch.Tensor
@@ -110,17 +94,46 @@ class RegressionWrapper(nn.Module):
         """Perform a single training step."""
         self.train()
 
-        if self.mode == "rotate":
-            input = torch.cat(
-                [input, rotation], dim=1
-            )  # Concatenate input and target images for rotation mode
-        elif self.mode == "generate":
-            input = rotation  # Use rotation encoding directly for generation mode
-        elif self.mode == "encode":
-            input = input  # Use input image directly for encoding mode
-        else:
-            raise ValueError(f"Invalid mode: {self.mode}")
+        # condition = torch.cat([input, rotation], dim=1)
+        condition = input
+        input = torch.zeros_like(input)
 
+        pred = self.model(input, condition, rotation[:, :, 0, 0])
+        loss, loss_dict = self.criterion(pred, target)
+        return loss, loss_dict
+
+
+class AutoEncoder(nn.Module):
+    """Simple AutoEncoder model."""
+
+    def __init__(self, model: nn.Module):
+        super().__init__()
+        self.model = model
+
+        self.criterion = AutoEncoderLoss(self.device())
+
+    def device(self):
+        """Return the device of the model parameters."""
+        return self.model.device()
+
+    def save(self, path):
+        self.model.save(path)
+
+    def load(self, path):
+        self.model.load(path)
+
+    def generate(
+        self, input: torch.Tensor, rotation: torch.Tensor, num_steps: int = 10
+    ) -> torch.Tensor:
+        """Forward pass through the autoencoder model."""
+
+        return self.model(input)[0]
+
+    def train_step(
+        self, input: torch.Tensor, rotation: torch.Tensor, target: torch.Tensor
+    ):
+        """Perform a single training step."""
+        self.train()
         pred = self.model(input)
         loss, loss_dict = self.criterion(pred, target)
         return loss, loss_dict

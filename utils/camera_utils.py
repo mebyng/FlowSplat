@@ -12,6 +12,12 @@ def rotation_matrix_to_quaternion(rotations):
     return quats
 
 
+def rotation_matrix_to_6d(rotations):
+    """Convert a batch of 3x3 rotation matrices to 6D representation."""
+    # Extract the first two columns of the rotation matrix
+    return rotations[:, :, :2].reshape(rotations.shape[0], -1)  # (N, 6)
+
+
 def compute_plucker(
     camera_matrix, intrinsics, height, width, fourier=True, num_frequencies=6
 ):

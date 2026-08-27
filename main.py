@@ -9,12 +9,15 @@ from data import ViewDataset
 from logger import SampleLogger
 from models import (
     SimpleAutoEncoder,
-    RegressionWrapper,
+    AutoEncoder,
     RotationConditionedUNetRes,
     CustomNet,
     CustomNetSpatialRotation,
-    FlowWrapper,
+    TripleEncoderCrossAttentionUNet,
+    FlowModel,
+    RegressionModel,
 )
+from models.UNetDummy import AttentionAutoEncoder
 from trainer import Trainer
 
 
@@ -52,8 +55,8 @@ def parse_args():
     parser.add_argument(
         "--rotation-encoding",
         type=str,
-        default="matrix",
-        choices=["plucker", "matrix"],
+        default="6D",
+        choices=["plucker", "matrix", "6D"],
         help="Type of rotation encoding to use (default: 'matrix')",
     )
     parser.add_argument(
@@ -145,12 +148,12 @@ def main():
     if args.mode == "generate":
         out_channels = 4 if args.use_encoding else 3
         in_channels = out_channels + 3
-        if args.rotation_encoding == "plucker":
-            in_channels += 72
-        elif args.rotation_encoding == "matrix":
-            in_channels += 16
+        # if args.rotation_encoding == "plucker":
+        #     in_channels += 72
+        # elif args.rotation_encoding == "matrix":
+        #     in_channels += 16
         resolution = 32 if args.use_encoding else 128
-        model = FlowWrapper(
+        model = FlowModel(
             RotationConditionedUNetRes(
                 in_channels=in_channels, out_channels=out_channels
             )
@@ -161,22 +164,27 @@ def main():
     elif args.mode == "rotate":
         out_channels = 4 if args.use_encoding else 3
         in_channels = out_channels
-        if args.rotation_encoding == "plucker":
-            in_channels += 72
-        elif args.rotation_encoding == "matrix":
-            in_channels += 16
+        # if args.rotation_encoding == "plucker":
+        #     in_channels += 72
+        # elif args.rotation_encoding == "matrix":
+        #     in_channels += 16
         resolution = 32 if args.use_encoding else 128
-        model = RegressionWrapper(
-            CustomNetSpatialRotation(
-                in_channels=in_channels, out_channels=out_channels
+        model = RegressionModel(
+            AttentionAutoEncoder(
+                mode="deterministic",
+                in_channels=in_channels,
+                out_channels=out_channels,
+                emb_channels=128,
             ),
-            mode=args.mode,
+            # CustomNetSpatialRotation(
+            #     in_channels=in_channels, out_channels=out_channels
+            # ),
         ).cuda()
 
         autoencoder = SimpleAutoEncoder().cuda().eval()
         autoencoder.load("weight_checkpoints/SimpleAutoEncoder_4_0001.pth")
     elif args.mode == "encode":
-        model = RegressionWrapper(SimpleAutoEncoder(), mode=args.mode).cuda()
+        model = AutoEncoder(SimpleAutoEncoder()).cuda()
         autoencoder = None
         resolution = 32
     else:
@@ -247,6 +255,7 @@ def main():
         validation_dataset=val_dataset,
         autoencoder=autoencoder,
         mode=args.mode,
+        rotation_encoding=args.rotation_encoding,
         batch_size=args.batch_size,
         scheduler=scheduler,
         savepoint=args.savepoint,
@@ -258,7 +267,10 @@ def main():
             os.path.join(args.logdir, args.mode), args.resume_from
         )
         print(f"Loading checkpoint from: {checkpoint_path}")
-        trainer.load_checkpoint(checkpoint_path, lr=args.lr)
+        if args.resume_from == args.run_name:
+            trainer.load_checkpoint(checkpoint_path, continued=True)
+        else:
+            trainer.load_checkpoint(checkpoint_path, lr=args.lr)
 
     trainer.train(epochs=args.epochs)
 
