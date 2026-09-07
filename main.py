@@ -13,11 +13,11 @@ from models import (
     RotationConditionedUNetRes,
     CustomNet,
     CustomNetSpatialRotation,
-    TripleEncoderCrossAttentionUNet,
     FlowModel,
     RegressionModel,
+    AttentionAutoEncoder,
+    AttentionAutoEncoderCameraEmbedding,
 )
-from models.UNetDummy import AttentionAutoEncoder
 from trainer import Trainer
 
 
@@ -226,7 +226,7 @@ def main():
     metadata = vars(args).copy()
     metadata.update(
         {
-            "model_name": type(model).__name__,
+            "model_name": type(model.model).__name__,
             "num_params": num_params,
             "num_trainable": num_trainable,
             "training_samples": len(dataset),

@@ -63,8 +63,10 @@ def compute_plucker(
     R = camera_matrix[:, :3, :3]  # (N, 3, 3)
     t = camera_matrix[:, :3, 3:4]  # (N, 3, 1)
 
-    # Camera center in world coordinates: C = -R^T @ t
-    camera_center = -torch.matmul(R.transpose(-2, -1), t).squeeze(-1)  # (N, 3)
+    # In this project, the pose matrix is stored as a world-to-camera basis transform, so
+    # the camera center in world coordinates is the inverse rotation applied to the camera
+    # translation: C = R^T @ t.
+    camera_center = torch.matmul(R.transpose(-2, -1), t).squeeze(-1)  # (N, 3)
 
     # Extract camera intrinsics
     fx = intrinsics[:, 0, 0]  # (N,)
@@ -72,32 +74,35 @@ def compute_plucker(
     cx = intrinsics[:, 0, 2]  # (N,)
     cy = intrinsics[:, 1, 2]  # (N,)
 
-    # Generate pixel coordinates
+    # Generate pixel-center coordinates in image space. Using pixel centers (0.5, 0.5, ...)
+    # ensures the optical center maps to (cx, cy) exactly and the principal ray matches the
+    # camera basis used by `look_at`.
     v, u = torch.meshgrid(
-        torch.arange(height, dtype=torch.float32, device=device),
-        torch.arange(width, dtype=torch.float32, device=device),
+        torch.arange(height, dtype=torch.float32, device=device) + 0.5,
+        torch.arange(width, dtype=torch.float32, device=device) + 0.5,
         indexing="ij",
     )  # (height, width)
 
-    # Normalize pixel coordinates to camera space
-    # For each batch, compute the ray direction in camera frame
     plucker_coords = []
 
     for i in range(batch_size):
-        # Ray direction in camera frame: [x, y, z] = [(u - cx) / fx, (v - cy) / fy, 1]
+        # In this pose convention, the camera-space principal axis is +Z, and the world-space
+        # ray is obtained by applying the inverse rotation to that camera-space vector.
         x_cam = (u - cx[i]) / fx[i]  # (height, width)
-        y_cam = (v - cy[i]) / fy[i]  # (height, width)
+        y_cam = (cy[i] - v) / fy[
+            i
+        ]  # (height, width); flip row axis for image-space convention
         z_cam = torch.ones_like(x_cam)  # (height, width)
 
-        # Ray direction in camera frame
         ray_dir_cam = torch.stack([x_cam, y_cam, z_cam], dim=-1)  # (height, width, 3)
         ray_dir_cam = ray_dir_cam / (
             torch.norm(ray_dir_cam, dim=-1, keepdim=True) + 1e-8
         )
 
-        # Transform ray direction to world frame: d_world = R^T @ d_cam
-        R_T = R[i].transpose(0, 1)  # (3, 3)
-        ray_dir_world = torch.matmul(ray_dir_cam, R_T.T)  # (height, width, 3)
+        # Transform into world space using the inverse rotation basis of the pose matrix.
+        ray_dir_world = torch.matmul(
+            ray_dir_cam, R[i].transpose(0, 1)
+        )  # (height, width, 3)
 
         # Camera center in world frame (broadcasted to match pixel grid)
         center_world = camera_center[i].unsqueeze(0).unsqueeze(0)  # (1, 1, 3)
@@ -138,8 +143,13 @@ def compute_plucker(
 
 
 def default_align_cameras(cam1, cam2):
-    rot = cam1[:3, :3].T
-    new_cam = torch.zeros(4, 4, device=cam1.device, dtype=cam1.dtype)
-    new_cam[:3] = rot @ cam2[:3]
+    if cam1.ndim == 3:
+        rot = cam1[:, :3, :3].transpose(-2, -1)
+        new_cam = torch.zeros(cam1.shape[0], 4, 4, device=cam1.device, dtype=cam1.dtype)
+        new_cam[:, :3, :3] = torch.matmul(rot, cam2[:, :3, :3])
+    else:
+        rot = cam1[:3, :3].T
+        new_cam = torch.zeros(4, 4, device=cam1.device, dtype=cam1.dtype)
+        new_cam[:3, :3] = rot @ cam2[:3, :3]
 
     return new_cam

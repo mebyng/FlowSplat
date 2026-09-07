@@ -39,6 +39,7 @@ class Trainer:
         self.savepoint = savepoint
         self.resolution = resolution
         self.logger = logger
+        self.start_epoch = 1
 
         self.train_loader = DataLoader(
             self.dataset, batch_size=self.batch_size, shuffle=True
@@ -50,74 +51,40 @@ class Trainer:
             )
 
     def _prepare_batch(self, batch):
-        if self.mode == "rotate":
-            input, target, target_extrinsics, intrinsics = batch
-            input = input.to(self.model.device())
-            target = target.to(self.model.device())
-            target_extrinsics = target_extrinsics.to(self.model.device())
-            intrinsics = intrinsics.to(self.model.device())
-            if self.rotation_encoding == "matrix":
-                rotation = target_extrinsics.reshape(-1, 16, 1, 1).repeat(
-                    1, 1, self.resolution, self.resolution
-                )
-            elif self.rotation_encoding == "6D":
-                rotation = (
-                    rotation_matrix_to_6d(target_extrinsics[:, :3, :3])
-                    .reshape(-1, 6, 1, 1)
-                    .repeat(1, 1, self.resolution, self.resolution)
-                )
-            elif self.rotation_encoding == "plucker":
-                rotation = compute_plucker(
-                    target_extrinsics,
-                    intrinsics,
-                    height=self.resolution,
-                    width=self.resolution,
-                )
-        elif self.mode == "generate":
-            input, target, target_extrinsics, intrinsics = batch
-            input = input.to(self.model.device())
-            input = torch.cat([input, torch.randn_like(input)], dim=1)
-            target = target.to(self.model.device())
-            target_extrinsics = target_extrinsics.to(self.model.device())
-            intrinsics = intrinsics.to(self.model.device())
-            if self.rotation_encoding == "matrix":
-                rotation = target_extrinsics.reshape(-1, 16, 1, 1).repeat(
-                    1, 1, self.resolution, self.resolution
-                )
-            elif self.rotation_encoding == "6D":
-                rotation = (
-                    rotation_matrix_to_6d(target_extrinsics[:, :3, :3])
-                    .reshape(-1, 6, 1, 1)
-                    .repeat(1, 1, self.resolution, self.resolution)
-                )
-            elif self.rotation_encoding == "plucker":
-                rotation = compute_plucker(
-                    target_extrinsics,
-                    intrinsics,
-                    height=self.resolution,
-                    width=self.resolution,
-                )
-        elif self.mode == "encode":
-            input = batch.to(self.model.device())
-            target = input
-            rotation = None
-        else:
-            raise ValueError(f"Invalid mode: {self.mode}")
-        return input, rotation, target
+        input, target, input_pose, target_pose, intrinsics = batch
+        input = input.to(self.model.device())
+        target = target.to(self.model.device())
+        input_pose = input_pose.to(self.model.device())
+        target_pose = target_pose.to(self.model.device())
+        intrinsics = intrinsics.to(self.model.device())
+        cameras = {
+            "source": input_pose,
+            "target": target_pose,
+            "intrinsics": intrinsics,
+        }
+        return input, target, cameras
 
     def train_step(self, batch):
-        input, rotation, target = self._prepare_batch(batch)
-        loss, loss_dict = self.model.train_step(input, rotation, target)
+        input, target, cameras = self._prepare_batch(batch)
+        loss, loss_dict = self.model.train_step(input, target, cameras)
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
         return loss_dict, target.shape[0]
 
     def val_step(self, batch):
-        input, rotation, target = self._prepare_batch(batch)
+        input, target, cameras = self._prepare_batch(batch)
         self.model.eval()
         with torch.no_grad():
-            prediction = self.model.generate(input, rotation)
+            if self.mode == "generate":
+                noise = (
+                    self.logger.random_inputs[0]
+                    .to(input.device)
+                    .repeat(input.shape[0], 1, 1, 1)
+                )
+            else:
+                noise = None
+            prediction = self.model.generate(input, noise, cameras)
             loss, loss_dict = self.model.criterion(
                 prediction, target
             )  # TODO does not work for AE
@@ -171,7 +138,7 @@ class Trainer:
             results[name] = {"input": [], "target": [], "pred": []}
 
             batch = dataset.getitems(indices)
-            input, rotation, target = self._prepare_batch(batch)
+            input, target, cameras = self._prepare_batch(batch)
             for j in range(n_loops):
                 with torch.no_grad():
                     if self.mode == "generate":
@@ -181,15 +148,10 @@ class Trainer:
                             .to(input.device)
                             .repeat(input.shape[0], 1, 1, 1)
                         )
-                        input = torch.cat(
-                            [
-                                input[:, :3],
-                                noise,
-                            ],
-                            dim=1,
-                        )
+                    else:
+                        noise = None
 
-                    pred = self.model.generate(input, rotation)
+                    pred = self.model.generate(input, noise, cameras)
 
                     if dataset.use_encoding:
                         if self.autoencoder is None:
@@ -250,10 +212,18 @@ class Trainer:
             for param_group in self.optimizer.param_groups:
                 param_group["lr"] = lr
 
+        if continued:
+            # Extract epoch number from the checkpoint path if possible
+            epoch_str = checkpoint_path.parent.name
+            if epoch_str.startswith("epoch_"):
+                self.start_epoch = int(epoch_str.split("_")[-1]) + 1
+            else:
+                self.start_epoch = 1
+
         return checkpoint
 
     def train(self, epochs):
-        epoch_bar = trange(1, epochs + 1, desc="Training", unit="epoch")
+        epoch_bar = trange(self.start_epoch, epochs + 1, desc="Training", unit="epoch")
         for epoch in epoch_bar:
             train_metrics = self.train_epoch()
             avg_loss = train_metrics.get("total", 0.0)
@@ -270,12 +240,13 @@ class Trainer:
                     {"learning_rate": current_lr}, epoch, subset="train"
                 )
 
+            if self.scheduler is not None:
+                self.scheduler.step()
+
             if epoch % self.savepoint == 0:
                 self.save_checkpoint(epoch=epoch)
                 self.log_images(epoch, final=False)
 
-            if self.scheduler is not None:
-                self.scheduler.step()
         self.save_checkpoint(epoch=epoch, final=True)
         self.log_images(epoch, final=True)
 

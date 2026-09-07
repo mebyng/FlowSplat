@@ -2,8 +2,8 @@ from .UNetDummy import (
     RotationConditionedUNetRes,
     CustomNet,
     CustomNetSpatialRotation,
-    TripleEncoderCrossAttentionUNet,
     AttentionAutoEncoder,
+    AttentionAutoEncoderCameraEmbedding,
 )
 from .Wrapper import FlowModel, RegressionModel, AutoEncoder
 from .AutoEncoder import SimpleAutoEncoder

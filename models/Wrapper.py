@@ -24,36 +24,35 @@ class FlowModel(nn.Module):
         self.model.load(path)
 
     def generate(
-        self, input: torch.Tensor, rotation: torch.Tensor, num_steps: int = 10
+        self,
+        input: torch.Tensor,
+        noise: torch.Tensor,
+        cameras: torch.Tensor,
+        num_steps: int = 10,
     ) -> torch.Tensor:
         """Forward pass through the flow matching model."""
         dt = 1.0 / num_steps
-        curr = input[:, 3:]
-        cond = input[:, :3]
+        current = noise
+        condition = input
         for i in range(num_steps):
             t = torch.full((input.size(0), 1), i * dt, device=input.device)
-            inp = torch.cat([curr, cond, rotation], dim=1)
-            curr = curr + self.model(inp, t) * dt
-        return curr
+            current = current + self.model(current, condition, cameras, t) * dt
+        return current
 
     def train_step(
-        self, input: torch.Tensor, rotation: torch.Tensor, target: torch.Tensor
+        self, input: torch.Tensor, target: torch.Tensor, cameras: torch.Tensor
     ):
         """Perform a single training step."""
         self.train()
         t = torch.rand(target.size(0), 1, device=target.device)
-        noise = input[:, 3:]
-        cond = input[:, :3]
+        noise = torch.randn_like(target)
+        condition = input
 
         interp = t.unsqueeze(-1).unsqueeze(-1)
         x_t = (1 - interp) * noise + interp * target
         v_target = target - noise
 
-        x_t = torch.cat(
-            [x_t, cond, rotation], dim=1
-        )  # Concatenate input with rotation encoding
-
-        pred = self.model(x_t, t)
+        pred = self.model(x_t, condition, cameras, t)
         loss, loss_dict = self.criterion(pred, v_target)
         return loss, loss_dict
 
@@ -78,18 +77,22 @@ class RegressionModel(nn.Module):
         self.model.load(path)
 
     def generate(
-        self, input: torch.Tensor, rotation: torch.Tensor, num_steps: int = 10
+        self,
+        input: torch.Tensor,
+        noise: torch.Tensor,
+        cameras: torch.Tensor,
+        num_steps: int = 10,
     ) -> torch.Tensor:
         """Forward pass through the regression model."""
 
         # condition = torch.cat([input, rotation], dim=1)
         condition = input
-        input = torch.zeros_like(input)
+        input = None
 
-        return self.model(input, condition, rotation[:, :, 0, 0])
+        return self.model(input, condition, cameras, None)
 
     def train_step(
-        self, input: torch.Tensor, rotation: torch.Tensor, target: torch.Tensor
+        self, input: torch.Tensor, target: torch.Tensor, cameras: torch.Tensor
     ):
         """Perform a single training step."""
         self.train()
@@ -98,7 +101,7 @@ class RegressionModel(nn.Module):
         condition = input
         input = torch.zeros_like(input)
 
-        pred = self.model(input, condition, rotation[:, :, 0, 0])
+        pred = self.model(input, condition, cameras, None)
         loss, loss_dict = self.criterion(pred, target)
         return loss, loss_dict
 
@@ -123,14 +126,18 @@ class AutoEncoder(nn.Module):
         self.model.load(path)
 
     def generate(
-        self, input: torch.Tensor, rotation: torch.Tensor, num_steps: int = 10
+        self,
+        input: torch.Tensor,
+        noise: torch.Tensor,
+        cameras: torch.Tensor,
+        num_steps: int = 10,
     ) -> torch.Tensor:
         """Forward pass through the autoencoder model."""
 
         return self.model(input)[0]
 
     def train_step(
-        self, input: torch.Tensor, rotation: torch.Tensor, target: torch.Tensor
+        self, input: torch.Tensor, target: torch.Tensor, cameras: torch.Tensor
     ):
         """Perform a single training step."""
         self.train()

@@ -7,6 +7,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from utils.camera_utils import (
+    compute_plucker,
+    default_align_cameras,
+    rotation_matrix_to_6d,
+)
+
 
 class _ConvBlock(nn.Module):
     def __init__(self, in_channels, out_channels, emb_channels=None):
@@ -108,8 +114,8 @@ def _spatial_positional_embedding(height, width, channels, device, dtype):
         * torch.arange(frequency_count, device=device, dtype=dtype)
         / frequency_count
     )
-    x_angles = xx.flatten()[:, None] * frequencies[None]
-    y_angles = yy.flatten()[:, None] * frequencies[None]
+    x_angles = xx[None] * frequencies[:, None, None]
+    y_angles = yy[None] * frequencies[:, None, None]
     embedding = torch.cat(
         [
             torch.sin(x_angles),
@@ -117,9 +123,9 @@ def _spatial_positional_embedding(height, width, channels, device, dtype):
             torch.sin(y_angles),
             torch.cos(y_angles),
         ],
-        dim=1,
+        dim=0,
     )
-    return embedding[:, :channels]
+    return embedding[:channels]
 
 
 class SelfAttention(nn.Module):
@@ -143,10 +149,7 @@ class SelfAttention(nn.Module):
         x = self.norm(x)
 
         x_flat = x.flatten(2).transpose(1, 2)
-        position = _spatial_positional_embedding(h, w, c, x.device, x.dtype).unsqueeze(
-            0
-        )
-        attn_out, _ = self.attn(x_flat + position, x_flat + position, x_flat)
+        attn_out, _ = self.attn(x_flat, x_flat, x_flat)
         attn_out = attn_out.transpose(1, 2).view(b, c, h, w)
         out = self.proj(attn_out)
         return residual + out
@@ -189,12 +192,6 @@ class CrossAttention(nn.Module):
         query_flat = query_norm.flatten(2).transpose(1, 2)
         key_flat = key_norm.flatten(2).transpose(1, 2)
         value_flat = value_norm.flatten(2).transpose(1, 2)
-
-        spatial_embedding = _spatial_positional_embedding(
-            h, w, c, query.device, query.dtype
-        ).unsqueeze(0)
-        query_flat = query_flat + spatial_embedding
-        key_flat = key_flat + spatial_embedding
 
         attn_out, _ = self.attn(query_flat, key_flat, value_flat)
         attn_out = attn_out.transpose(1, 2).view(b, c, h, w)
@@ -335,6 +332,7 @@ class CustomNet(nn.Module):
         self, in_channels=3, out_channels=3, base_channels=32, emb_channels=64
     ):
         super().__init__()
+        self.base_channels = base_channels
         self.cond_embed = nn.Sequential(
             nn.Linear(16, emb_channels),
             nn.SiLU(),
@@ -442,6 +440,11 @@ class CustomNet(nn.Module):
                 image.size(0), self.cond_embed[0].out_features, device=image.device
             )
 
+        b, c, h, w = image.shape
+        pos_emb = _spatial_positional_embedding(
+            h, w, self.base_channels * 8, image.device, image.dtype
+        ).unsqueeze(0)
+
         x1 = self.enc(image, cond_enc)  # shape (B, base_channels, H, W)
         x2 = self.enc2(x1, cond_enc)  # shape (B, base_channels*2, H, W)
         x3 = self.down1(x2, cond_enc)  # shape (B, base_channels*2, H/2, W/2)
@@ -452,13 +455,13 @@ class CustomNet(nn.Module):
 
         x = self.bottleneck01(x7, cond_enc)  # shape (B, base_channels*8, H/8, W/8)
         x = self.bottleneck02(x, cond_enc)  # shape (B, base_channels*8, H/8, W/8)
-        x = self.attention1(x)
+        x = self.attention1(x + pos_emb)
         x = self.bottleneck11(x, cond_enc)  # shape (B, base_channels*8, H/8, W/8)
         x = self.bottleneck12(x, cond_enc)  # shape (B, base_channels*8, H/8, W/8)
-        x = self.attention2(x)
+        x = self.attention2(x + pos_emb)
         x = self.bottleneck21(x, cond_enc)  # shape (B, base_channels*8, H/8, W/8)
         x = self.bottleneck22(x, cond_enc)  # shape (B, base_channels*8, H/8, W/8)
-        x = self.attention3(x)
+        x = self.attention3(x + pos_emb)
         x = self.bottleneck31(x, cond_enc)  # shape (B, base_channels*8, H/8, W/8)
         x = self.bottleneck32(x, cond_enc)  # shape (B, base_channels*8, H/8, W/8)
         x = self.up1(x, x6, cond_enc)  # shape (B, base_channels*4, H/4, W/4)
@@ -513,7 +516,10 @@ class CustomNetSpatialRotation(CustomNet):
         coord_enc = coord_enc.unsqueeze(0).expand(B, -1, -1, -1)
 
         rot_image = torch.cat([rot_image, coord_enc], dim=1)
-        rot_feat = self.rotation_embed(rot_image)
+        rot_feat = self.rotation_emb
+        pos_emb = _spatial_positional_embedding(
+            H, W, self.base_channels * 8, input.device, input.dtype
+        ).unsqueeze(0)
 
         # for the moment ignore input noise
         x1 = self.enc(condition, cond_enc)  # shape (B, base_channels, H, W)
@@ -772,21 +778,27 @@ class AttentionAutoEncoder(nn.Module):
         )
 
     def apply_core(self, current, source, condition, rotation):
-        key1 = self.key_encoder1(source, rotation)
+
+        b, c, h, w = source.shape
+        pos_emb = _spatial_positional_embedding(
+            h, w, self.base_channels * 8, source.device, source.dtype
+        ).unsqueeze(0)
+
+        key1 = self.key_encoder1(source + pos_emb, rotation)
         value1 = self.value_encoder1(source)
-        query1 = self.query_encoder1(current, rotation)
+        query1 = self.query_encoder1(current + pos_emb, rotation)
         x = self.cross_attn1(query1, key1, value1)
         x = self.bottleneck_res1(x, condition)
 
-        key2 = self.key_encoder2(source, rotation)
+        key2 = self.key_encoder2(source + pos_emb, rotation)
         value2 = self.value_encoder2(source)
-        query2 = self.query_encoder2(x, rotation)
+        query2 = self.query_encoder2(x + pos_emb, rotation)
         x = self.cross_attn2(query2, key2, value2)
         x = self.bottleneck_res2(x, condition)
 
-        key3 = self.key_encoder3(source, rotation)
+        key3 = self.key_encoder3(source + pos_emb, rotation)
         value3 = self.value_encoder3(source)
-        query3 = self.query_encoder3(x, rotation)
+        query3 = self.query_encoder3(x + pos_emb, rotation)
         x = self.cross_attn3(query3, key3, value3)
         x = self.bottleneck_res3(x, condition)
 
@@ -801,18 +813,20 @@ class AttentionAutoEncoder(nn.Module):
     def load(self, path):
         self.load_state_dict(torch.load(path))
 
-    def forward(self, input, condition, rotation, timestep=None):
+    def forward(self, input, condition, cameras, timestep=None):
         """Forward pass.
 
         Args:
             input: input tensor of shape (B, in_channels, H, W)
             condition: conditioning tensor of shape (B, in_channels, H, W)
-            rotation: rotation matrix of shape (B, 16)
+            cameras: camera parameters
             timestep: timestep/noise condition of shape (B, 1)
         Returns:
             output: tensor of shape (B, out_channels, H, W)
         """
         time_emb = self.apply_time_embedding(timestep)
+        rotation = default_align_cameras(cameras["source"], cameras["target"])
+        rotation = rotation_matrix_to_6d(rotation[:, :3, :3])
         rotation_emb = self.apply_rotation_embedding(rotation)
 
         source = self.apply_image_encoder(condition)

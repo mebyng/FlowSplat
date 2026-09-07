@@ -144,8 +144,7 @@ class ViewDataset(Dataset):
             target_image = self._load_image(target_path, self.target_transform)
 
         if self.mode == "rotate" or self.mode == "generate":
-            target_pose_aligned = default_align_cameras(input_pose, target_pose)
-            return input_image, target_image, target_pose_aligned, intrinsics
+            return input_image, target_image, input_pose, target_pose, intrinsics
         elif self.mode == "encode":
             return input_image
         else:
