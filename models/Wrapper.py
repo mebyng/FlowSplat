@@ -34,9 +34,12 @@ class FlowModel(nn.Module):
         dt = 1.0 / num_steps
         current = noise
         condition = input
+        if hasattr(self.model, "encode_condition"):
+            condition, _ = self.model.encode_condition(condition)
         for i in range(num_steps):
             t = torch.full((input.size(0), 1), i * dt, device=input.device)
-            current = current + self.model(current, condition, cameras, t) * dt
+            velocity = self.model(current, condition, cameras, t)
+            current = current + velocity * dt
         return current
 
     def train_step(

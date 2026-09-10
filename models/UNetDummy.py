@@ -144,7 +144,6 @@ class SelfAttention(nn.Module):
         self.proj = nn.Conv2d(channels, channels, kernel_size=1)
 
     def forward(self, x):
-        residual = x
         b, c, h, w = x.shape
         x = self.norm(x)
 
@@ -152,7 +151,7 @@ class SelfAttention(nn.Module):
         attn_out, _ = self.attn(x_flat, x_flat, x_flat)
         attn_out = attn_out.transpose(1, 2).view(b, c, h, w)
         out = self.proj(attn_out)
-        return residual + out
+        return out
 
 
 class CrossAttention(nn.Module):
@@ -182,7 +181,6 @@ class CrossAttention(nn.Module):
         Returns:
             output: (B, C, H, W) - attended features
         """
-        residual = query
         b, c, h, w = query.shape
 
         query_norm = self.norm_q(query)
@@ -196,7 +194,7 @@ class CrossAttention(nn.Module):
         attn_out, _ = self.attn(query_flat, key_flat, value_flat)
         attn_out = attn_out.transpose(1, 2).view(b, c, h, w)
         out = self.proj(attn_out)
-        return residual + out
+        return out
 
 
 class _Down(nn.Module):
@@ -290,7 +288,7 @@ class RotationConditionedUNetRes(nn.Module):
     def load(self, path):
         self.load_state_dict(torch.load(path))
 
-    def forward(self, image, timestep=None):
+    def forward(self, input, condition, cameras, timestep=None):
         """Forward pass.
 
         Args:
@@ -304,8 +302,17 @@ class RotationConditionedUNetRes(nn.Module):
             cond_tmp = self.cond_embed(timestep)
         else:
             cond_tmp = torch.zeros(
-                image.size(0), self.cond_embed[0].out_features, device=image.device
+                input.size(0), self.cond_embed[0].out_features, device=input.device
             )
+
+        rotation = default_align_cameras(cameras["source"], cameras["target"])
+        rotation = rotation_matrix_to_6d(rotation[:, :3, :3])
+        rotation_image = rotation.view(input.size(0), 6, 1, 1).expand(
+            -1, -1, input.size(2), input.size(3)
+        )
+        image = torch.cat(
+            [input, condition, rotation_image], dim=1
+        )  # Concatenate rotation features with input image
 
         x1 = self.enc(image, cond_tmp)  # shape (B, base_channels, H, W)
         x2 = self.enc2(x1, cond_tmp)  # shape (B, base_channels*2, H, W)
@@ -313,11 +320,11 @@ class RotationConditionedUNetRes(nn.Module):
         x4 = self.down1(x3, cond_tmp)  # shape (B, base_channels*2, H/2, W/2)
         x5 = self.down2(x4, cond_tmp)  # shape (B, base_channels*4, H/4, W/4)
 
-        x = self.attention1(x5)
+        x = x5 + self.attention1(x5)
         x = self.bottleneck1(x, cond_tmp)  # shape (B, base_channels*4, H/4, W/4)
-        x = self.attention2(x)
+        x = x + self.attention2(x)
         x = self.bottleneck2(x, cond_tmp)  # shape (B, base_channels*8, H/4, W/4)
-        x = self.attention3(x)
+        x = x + self.attention3(x)
         x = self.up1(x, x4, cond_tmp)  # shape (B, base_channels*4, H/2, W/2)
         x = self.up2(x, x3, cond_tmp)  # shape (B, base_channels*2, H, W)
         x = self.dec(x, cond_tmp)  # shape (B, base_channels, H, W)
@@ -455,13 +462,13 @@ class CustomNet(nn.Module):
 
         x = self.bottleneck01(x7, cond_enc)  # shape (B, base_channels*8, H/8, W/8)
         x = self.bottleneck02(x, cond_enc)  # shape (B, base_channels*8, H/8, W/8)
-        x = self.attention1(x + pos_emb)
+        x = x + self.attention1(x + pos_emb)
         x = self.bottleneck11(x, cond_enc)  # shape (B, base_channels*8, H/8, W/8)
         x = self.bottleneck12(x, cond_enc)  # shape (B, base_channels*8, H/8, W/8)
-        x = self.attention2(x + pos_emb)
+        x = x + self.attention2(x + pos_emb)
         x = self.bottleneck21(x, cond_enc)  # shape (B, base_channels*8, H/8, W/8)
         x = self.bottleneck22(x, cond_enc)  # shape (B, base_channels*8, H/8, W/8)
-        x = self.attention3(x + pos_emb)
+        x = x + self.attention3(x + pos_emb)
         x = self.bottleneck31(x, cond_enc)  # shape (B, base_channels*8, H/8, W/8)
         x = self.bottleneck32(x, cond_enc)  # shape (B, base_channels*8, H/8, W/8)
         x = self.up1(x, x6, cond_enc)  # shape (B, base_channels*4, H/4, W/4)
@@ -649,20 +656,35 @@ class AttentionAutoEncoder(nn.Module):
     def apply_image_encoder(self, input, condition=None):
         x = self.in_conv(input, condition)  # shape (B, base_channels, H, W)
 
-        x = self.enc2(x, condition)  # shape (B, base_channels*2, H, W)
-        x = self.down1(x, condition)  # shape (B, base_channels*2, H/2, W/2)
+        x1 = self.enc2(x, condition)  # shape (B, base_channels, H, W)
+        x2 = self.down1(x1, condition)  # shape (B, base_channels*2, H/2, W/2)
 
-        x = self.enc3(x, condition)  # shape (B, base_channels*2, H/2, W/2)
-        x = self.down2(x, condition)  # shape (B, base_channels*4, H/4, W/4)
+        x3 = self.enc3(x2, condition)  # shape (B, base_channels*2, H/2, W/2)
+        x4 = self.down2(x3, condition)  # shape (B, base_channels*4, H/4, W/4)
 
-        x = self.enc4(x, condition)  # shape (B, base_channels*4, H/4, W/4)
-        x = self.down3(x, condition)  # shape (B, base_channels*8, H/8, W/8)
+        x5 = self.enc4(x4, condition)  # shape (B, base_channels*4, H/4, W/4)
+        x6 = self.down3(x5, condition)  # shape (B, base_channels*8, H/8, W/8)
 
-        return x
+        return x6, (x1, x3, x5)
+
+    def encode_condition(self, condition):
+        return self.apply_image_encoder(condition)
+
+    def is_encoded_condition(self, condition):
+        return condition.ndim == 4 and condition.shape[1] == self.base_channels * 8
 
     def construct_image_decoder(self):
+        if self.mode == "deterministic":
+            up1_channels = self.base_channels * 8
+            up2_channels = self.base_channels * 4
+            up3_channels = self.base_channels * 2
+        elif self.mode == "flow":
+            up1_channels = self.base_channels * 8 + self.base_channels * 4
+            up2_channels = self.base_channels * 4 + self.base_channels * 2
+            up3_channels = self.base_channels * 2 + self.base_channels
+
         self.up1 = _Up(
-            self.base_channels * 8,
+            up1_channels,
             self.base_channels * 4,
             emb_channels=self.emb_channels,
         )
@@ -673,7 +695,7 @@ class AttentionAutoEncoder(nn.Module):
         )
 
         self.up2 = _Up(
-            self.base_channels * 4,
+            up2_channels,
             self.base_channels * 2,
             emb_channels=self.emb_channels,
         )
@@ -683,26 +705,28 @@ class AttentionAutoEncoder(nn.Module):
             emb_channels=self.emb_channels,
         )
 
-        self.up3 = _Up(
-            self.base_channels * 2, self.base_channels, emb_channels=self.emb_channels
-        )
+        self.up3 = _Up(up3_channels, self.base_channels, emb_channels=self.emb_channels)
         self.dec3 = ResBlock(
             self.base_channels, self.base_channels, emb_channels=self.emb_channels
         )
 
         self.out_conv = nn.Conv2d(self.base_channels, self.out_channels, kernel_size=1)
 
-    def apply_image_decoder(self, latent, condition=None):
-        x = self.up1(latent, condition)  # shape (B, base_channels*4, H/4, W/4)
-        x = self.dec1(x, condition)  # shape (B, base_channels*4, H/4, W/4)
+    def apply_image_decoder(self, latent, skips=None, condition=None):
+        if skips is not None:
+            x1, x3, x5 = skips
+        else:
+            x1 = x3 = x5 = None
+        x = self.up1(latent, skip=x5, cond=condition)  # (B, base_channels*4, H/4, W/4)
+        x = self.dec1(x, emb=condition)  # (B, base_channels*4, H/4, W/4)
 
-        x = self.up2(x, condition)  # shape (B, base_channels*2, H/2, W/2)
-        x = self.dec2(x, condition)  # shape (B, base_channels*2, H/2, W/2)
+        x = self.up2(x, skip=x3, cond=condition)  # (B, base_channels*2, H/2, W/2)
+        x = self.dec2(x, emb=condition)  # (B, base_channels*2, H/2, W/2)
 
-        x = self.up3(x, condition)  # shape (B, base_channels, H, W)
-        x = self.dec3(x, condition)  # shape (B, base_channels, H, W)
+        x = self.up3(x, skip=x1, cond=condition)  # (B, base_channels, H, W)
+        x = self.dec3(x, emb=condition)  # (B, base_channels, H, W)
 
-        x = self.out_conv(x)  # shape (B, out_channels, H, W)
+        x = self.out_conv(x)  # (B, out_channels, H, W)
 
         return x
 
@@ -787,19 +811,19 @@ class AttentionAutoEncoder(nn.Module):
         key1 = self.key_encoder1(source + pos_emb, rotation)
         value1 = self.value_encoder1(source)
         query1 = self.query_encoder1(current + pos_emb, rotation)
-        x = self.cross_attn1(query1, key1, value1)
+        x = current + self.cross_attn1(query1, key1, value1)
         x = self.bottleneck_res1(x, condition)
 
         key2 = self.key_encoder2(source + pos_emb, rotation)
         value2 = self.value_encoder2(source)
         query2 = self.query_encoder2(x + pos_emb, rotation)
-        x = self.cross_attn2(query2, key2, value2)
+        x = x + self.cross_attn2(query2, key2, value2)
         x = self.bottleneck_res2(x, condition)
 
         key3 = self.key_encoder3(source + pos_emb, rotation)
         value3 = self.value_encoder3(source)
         query3 = self.query_encoder3(x + pos_emb, rotation)
-        x = self.cross_attn3(query3, key3, value3)
+        x = x + self.cross_attn3(query3, key3, value3)
         x = self.bottleneck_res3(x, condition)
 
         return x
@@ -829,16 +853,19 @@ class AttentionAutoEncoder(nn.Module):
         rotation = rotation_matrix_to_6d(rotation[:, :3, :3])
         rotation_emb = self.apply_rotation_embedding(rotation)
 
-        source = self.apply_image_encoder(condition)
+        if not self.is_encoded_condition(condition):
+            condition, _ = self.encode_condition(condition)
+        source = condition
+        skips = None
 
         if self.mode == "deterministic":
             latent = source.clone()
         elif self.mode == "flow":
-            latent = self.apply_image_encoder(input)
+            latent, skips = self.apply_image_encoder(input)
 
         # Apply core processing with cross-attention
         core_output = self.apply_core(latent, source, time_emb, rotation_emb)
 
-        output = self.apply_image_decoder(core_output, condition=time_emb)
+        output = self.apply_image_decoder(core_output, skips, condition=time_emb)
 
         return output

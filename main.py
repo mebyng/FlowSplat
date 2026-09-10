@@ -16,7 +16,6 @@ from models import (
     FlowModel,
     RegressionModel,
     AttentionAutoEncoder,
-    AttentionAutoEncoderCameraEmbedding,
 )
 from trainer import Trainer
 
@@ -146,39 +145,29 @@ def main():
         use_encoding=args.use_encoding,
     )  # Use deterministic matching for validation
     if args.mode == "generate":
-        out_channels = 4 if args.use_encoding else 3
-        in_channels = out_channels + 3
-        # if args.rotation_encoding == "plucker":
-        #     in_channels += 72
-        # elif args.rotation_encoding == "matrix":
-        #     in_channels += 16
+        channels = 4 if args.use_encoding else 3
         resolution = 32 if args.use_encoding else 128
         model = FlowModel(
-            RotationConditionedUNetRes(
-                in_channels=in_channels, out_channels=out_channels
-            )
+            AttentionAutoEncoder(
+                mode="flow",
+                in_channels=channels,
+                out_channels=channels,
+                emb_channels=128,
+            ),
         ).cuda()
 
         autoencoder = SimpleAutoEncoder().cuda().eval()
         autoencoder.load("weight_checkpoints/SimpleAutoEncoder_4_0001.pth")
     elif args.mode == "rotate":
-        out_channels = 4 if args.use_encoding else 3
-        in_channels = out_channels
-        # if args.rotation_encoding == "plucker":
-        #     in_channels += 72
-        # elif args.rotation_encoding == "matrix":
-        #     in_channels += 16
+        channels = 4 if args.use_encoding else 3
         resolution = 32 if args.use_encoding else 128
         model = RegressionModel(
             AttentionAutoEncoder(
                 mode="deterministic",
-                in_channels=in_channels,
-                out_channels=out_channels,
+                in_channels=channels,
+                out_channels=channels,
                 emb_channels=128,
             ),
-            # CustomNetSpatialRotation(
-            #     in_channels=in_channels, out_channels=out_channels
-            # ),
         ).cuda()
 
         autoencoder = SimpleAutoEncoder().cuda().eval()
