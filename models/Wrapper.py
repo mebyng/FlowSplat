@@ -4,14 +4,12 @@ import torch.nn as nn
 from losses import AutoEncoderLoss, MSELoss
 
 
-class FlowModel(nn.Module):
-    """Simple Flow Matching model."""
+class Wrapper(nn.Module):
+    """Super Class for Wrapping Models with a common interface for training and generation."""
 
     def __init__(self, model: nn.Module):
         super().__init__()
         self.model = model
-
-        self.criterion = MSELoss()
 
     def device(self):
         """Return the device of the model parameters."""
@@ -22,6 +20,45 @@ class FlowModel(nn.Module):
 
     def load(self, path):
         self.model.load(path)
+
+    def generate(
+        self,
+        input: torch.Tensor,
+        noise: torch.Tensor,
+        cameras: torch.Tensor,
+        num_steps: int = 10,
+    ) -> torch.Tensor:
+        """Forward pass through the model."""
+        raise NotImplementedError(
+            "The generate method must be implemented in subclasses."
+        )
+
+    def generation_log(
+        self,
+        input: torch.Tensor,
+        noise: torch.Tensor,
+        cameras: torch.Tensor,
+        num_steps: int = 10,
+    ):
+        """Log the generation process."""
+
+        return self.generate(input, noise, cameras, num_steps), None
+
+    def train_step(
+        self, input: torch.Tensor, target: torch.Tensor, cameras: torch.Tensor
+    ):
+        """Perform a single training step."""
+        raise NotImplementedError(
+            "The train_step method must be implemented in subclasses."
+        )
+
+
+class FlowModel(Wrapper):
+    """Simple Flow Matching model."""
+
+    def __init__(self, model: nn.Module):
+        super().__init__(model)
+        self.criterion = MSELoss()
 
     def generate(
         self,
@@ -42,6 +79,31 @@ class FlowModel(nn.Module):
             current = current + velocity * dt
         return current
 
+    def generation_log(
+        self,
+        input: torch.Tensor,
+        noise: torch.Tensor,
+        cameras: torch.Tensor,
+        num_steps: int = 10,
+    ):
+        """Log the generation process."""
+
+        dt = 1.0 / num_steps
+        current = noise
+        condition = input
+        if hasattr(self.model, "encode_condition"):
+            condition, _ = self.model.encode_condition(condition)
+
+        intermediates = []
+
+        for i in range(num_steps):
+            t = torch.full((input.size(0), 1), i * dt, device=input.device)
+            velocity = self.model(current, condition, cameras, t)
+            intermediates.append(current + velocity * dt * (num_steps - i))
+            current = current + velocity * dt
+
+        return current, intermediates
+
     def train_step(
         self, input: torch.Tensor, target: torch.Tensor, cameras: torch.Tensor
     ):
@@ -60,24 +122,12 @@ class FlowModel(nn.Module):
         return loss, loss_dict
 
 
-class RegressionModel(nn.Module):
+class RegressionModel(Wrapper):
     """Simple Regression model."""
 
     def __init__(self, model: nn.Module):
-        super().__init__()
-        self.model = model
-
+        super().__init__(model)
         self.criterion = MSELoss()
-
-    def device(self):
-        """Return the device of the model parameters."""
-        return self.model.device()
-
-    def save(self, path):
-        self.model.save(path)
-
-    def load(self, path):
-        self.model.load(path)
 
     def generate(
         self,
@@ -109,24 +159,12 @@ class RegressionModel(nn.Module):
         return loss, loss_dict
 
 
-class AutoEncoder(nn.Module):
+class AutoEncoder(Wrapper):
     """Simple AutoEncoder model."""
 
     def __init__(self, model: nn.Module):
-        super().__init__()
-        self.model = model
-
+        super().__init__(model)
         self.criterion = AutoEncoderLoss(self.device())
-
-    def device(self):
-        """Return the device of the model parameters."""
-        return self.model.device()
-
-    def save(self, path):
-        self.model.save(path)
-
-    def load(self, path):
-        self.model.load(path)
 
     def generate(
         self,

@@ -39,8 +39,8 @@ class SampleLogger:
         self.writer = SummaryWriter(log_dir=str(self.log_path))
         if metadata:
             self.log_metadata(metadata)
-        self.sample_indices = {
-            name: self._select_sample_indices(dataset, name)
+        self.samples = {
+            name: dataset.getitems(self._select_sample_indices(dataset, name))
             for name, dataset in self.datasets
         }
         self.random_inputs = (
@@ -92,17 +92,20 @@ class SampleLogger:
         for name, data in results.items():
             subset_dir = save_dir / name
             subset_dir.mkdir(parents=True, exist_ok=True)
-            for j, (input, target, pred) in enumerate(
-                zip(data["input"], data["target"], data["pred"])
+            for j, (input, target, pred, intermediates) in enumerate(
+                zip(data["input"], data["target"], data["pred"], data["intermediates"])
             ):
                 for i in range(input.shape[0]):
                     val_input = input[i].unsqueeze(0)
                     val_target = target[i].unsqueeze(0)
                     val_pred = pred[i].unsqueeze(0)
+                    val_intermediates = [
+                        inter[i].unsqueeze(0) for inter in intermediates
+                    ]
 
-                    save_image(val_input, str(subset_dir / f"{i}_{j}_input.png"))
-                    save_image(val_target, str(subset_dir / f"{i}_{j}_target.png"))
-                    save_image(val_pred, str(subset_dir / f"{i}_{j}_prediction.png"))
+                    # save_image(val_input, str(subset_dir / f"{i}_{j}_input.png"))
+                    # save_image(val_target, str(subset_dir / f"{i}_{j}_target.png"))
+                    # save_image(val_pred, str(subset_dir / f"{i}_{j}_prediction.png"))
 
                     combined = torch.cat(
                         [val_input[:, :3], val_target, val_pred], dim=-1
@@ -110,6 +113,11 @@ class SampleLogger:
                     self.writer.add_images(
                         f"images_{name}/combined_{i}_{j}", combined, epoch
                     )
+                    if self.mode == "generate":
+                        process = torch.cat(val_intermediates, dim=-1)
+                        self.writer.add_images(
+                            f"generation_{name}/{i}_{j}", process, epoch
+                        )
 
     def close(self):
         self.writer.close()

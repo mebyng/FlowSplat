@@ -131,13 +131,12 @@ class Trainer:
         results = {}
         self.model.eval()
         for name, dataset in datasets:
-            indices = self.logger.sample_indices[name]
+            batch = self.logger.samples[name]
             # In rotate mode, there's one fixed target per input, so j is meaningless
             # In generate/encode mode, j represents different random samples
             n_loops = 1 if self.mode != "generate" else self.logger.n_samples
-            results[name] = {"input": [], "target": [], "pred": []}
+            results[name] = {"input": [], "target": [], "pred": [], "intermediates": []}
 
-            batch = dataset.getitems(indices)
             input, target, cameras = self._prepare_batch(batch)
             for j in range(n_loops):
                 with torch.no_grad():
@@ -151,7 +150,9 @@ class Trainer:
                     else:
                         noise = None
 
-                    pred = self.model.generate(input, noise, cameras)
+                    pred, intermediates = self.model.generation_log(
+                        input, noise, cameras
+                    )
 
                     if dataset.use_encoding:
                         if self.autoencoder is None:
@@ -161,10 +162,14 @@ class Trainer:
                         input = self.autoencoder.decode(input)
                         target = self.autoencoder.decode(target)
                         pred = self.autoencoder.decode(pred)
+                        intermediates = [
+                            self.autoencoder.decode(inter) for inter in intermediates
+                        ]
 
                     results[name]["input"].append(input[:, :3])
                     results[name]["target"].append(target)
                     results[name]["pred"].append(pred)
+                    results[name]["intermediates"].append(intermediates)
 
         self.logger.save(results, epoch, final=final)
 
