@@ -23,7 +23,7 @@ class Wrapper(nn.Module):
 
     def generate(
         self,
-        input: torch.Tensor,
+        source: torch.Tensor,
         noise: torch.Tensor,
         cameras: torch.Tensor,
         num_steps: int = 10,
@@ -35,17 +35,17 @@ class Wrapper(nn.Module):
 
     def generation_log(
         self,
-        input: torch.Tensor,
+        source: torch.Tensor,
         noise: torch.Tensor,
         cameras: torch.Tensor,
         num_steps: int = 10,
     ):
         """Log the generation process."""
 
-        return self.generate(input, noise, cameras, num_steps), None
+        return self.generate(source, noise, cameras, num_steps), None
 
     def train_step(
-        self, input: torch.Tensor, target: torch.Tensor, cameras: torch.Tensor
+        self, source: torch.Tensor, target: torch.Tensor, cameras: torch.Tensor
     ):
         """Perform a single training step."""
         raise NotImplementedError(
@@ -62,7 +62,7 @@ class FlowModel(Wrapper):
 
     def generate(
         self,
-        input: torch.Tensor,
+        source: torch.Tensor,
         noise: torch.Tensor,
         cameras: torch.Tensor,
         num_steps: int = 10,
@@ -70,18 +70,17 @@ class FlowModel(Wrapper):
         """Forward pass through the flow matching model."""
         dt = 1.0 / num_steps
         current = noise
-        condition = input
-        if hasattr(self.model, "encode_condition"):
-            condition, _ = self.model.encode_condition(condition)
+        if hasattr(self.model, "encode_source"):
+            source, _ = self.model.encode_source(source)
         for i in range(num_steps):
-            t = torch.full((input.size(0), 1), i * dt, device=input.device)
-            velocity = self.model(current, condition, cameras, t)
+            t = torch.full((source.size(0), 1), i * dt, device=source.device)
+            velocity = self.model(current, source, cameras, t)
             current = current + velocity * dt
         return current
 
     def generation_log(
         self,
-        input: torch.Tensor,
+        source: torch.Tensor,
         noise: torch.Tensor,
         cameras: torch.Tensor,
         num_steps: int = 10,
@@ -90,34 +89,32 @@ class FlowModel(Wrapper):
 
         dt = 1.0 / num_steps
         current = noise
-        condition = input
-        if hasattr(self.model, "encode_condition"):
-            condition, _ = self.model.encode_condition(condition)
+        if hasattr(self.model, "encode_source"):
+            source, _ = self.model.encode_source(source)
 
         intermediates = []
 
         for i in range(num_steps):
-            t = torch.full((input.size(0), 1), i * dt, device=input.device)
-            velocity = self.model(current, condition, cameras, t)
+            t = torch.full((source.size(0), 1), i * dt, device=source.device)
+            velocity = self.model(current, source, cameras, t)
             intermediates.append(current + velocity * dt * (num_steps - i))
             current = current + velocity * dt
 
         return current, intermediates
 
     def train_step(
-        self, input: torch.Tensor, target: torch.Tensor, cameras: torch.Tensor
+        self, source: torch.Tensor, target: torch.Tensor, cameras: torch.Tensor
     ):
         """Perform a single training step."""
         self.train()
         t = torch.rand(target.size(0), 1, device=target.device)
         noise = torch.randn_like(target)
-        condition = input
 
         interp = t.unsqueeze(-1).unsqueeze(-1)
         x_t = (1 - interp) * noise + interp * target
         v_target = target - noise
 
-        pred = self.model(x_t, condition, cameras, t)
+        pred = self.model(x_t, source, cameras, t)
         loss, loss_dict = self.criterion(pred, v_target)
         return loss, loss_dict
 
@@ -131,30 +128,22 @@ class RegressionModel(Wrapper):
 
     def generate(
         self,
-        input: torch.Tensor,
+        source: torch.Tensor,
         noise: torch.Tensor,
         cameras: torch.Tensor,
         num_steps: int = 10,
     ) -> torch.Tensor:
         """Forward pass through the regression model."""
 
-        # condition = torch.cat([input, rotation], dim=1)
-        condition = input
-        input = None
-
-        return self.model(input, condition, cameras, None)
+        return self.model(None, source, cameras, None)
 
     def train_step(
-        self, input: torch.Tensor, target: torch.Tensor, cameras: torch.Tensor
+        self, source: torch.Tensor, target: torch.Tensor, cameras: torch.Tensor
     ):
         """Perform a single training step."""
         self.train()
 
-        # condition = torch.cat([input, rotation], dim=1)
-        condition = input
-        input = torch.zeros_like(input)
-
-        pred = self.model(input, condition, cameras, None)
+        pred = self.model(torch.zeros_like(source), source, cameras, None)
         loss, loss_dict = self.criterion(pred, target)
         return loss, loss_dict
 
@@ -168,20 +157,20 @@ class AutoEncoder(Wrapper):
 
     def generate(
         self,
-        input: torch.Tensor,
+        source: torch.Tensor,
         noise: torch.Tensor,
         cameras: torch.Tensor,
         num_steps: int = 10,
     ) -> torch.Tensor:
         """Forward pass through the autoencoder model."""
 
-        return self.model(input)[0]
+        return self.model(source)[0]
 
     def train_step(
-        self, input: torch.Tensor, target: torch.Tensor, cameras: torch.Tensor
+        self, source: torch.Tensor, target: torch.Tensor, cameras: torch.Tensor
     ):
         """Perform a single training step."""
         self.train()
-        pred = self.model(input)
+        pred = self.model(source)
         loss, loss_dict = self.criterion(pred, target)
         return loss, loss_dict
