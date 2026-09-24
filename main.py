@@ -81,6 +81,11 @@ def parse_args():
         action="store_true",
         help="Whether to use AE encoding",
     )
+    parser.add_argument(
+        "--use-depth",
+        action="store_true",
+        help="Append ground-truth depth as a fourth RGB-D channel for rotation/flow training.",
+    )
     return parser.parse_args()
 
 
@@ -133,6 +138,7 @@ def main():
         split="training",
         mode=args.mode,
         use_encoding=args.use_encoding,
+        use_depth=args.use_depth,
     )
     val_dataset = ViewDataset(
         args.dataset_path,
@@ -140,9 +146,10 @@ def main():
         mode=args.mode,
         random_matching=False,
         use_encoding=args.use_encoding,
+        use_depth=args.use_depth,
     )  # Use deterministic matching for validation
     if args.mode == "generate":
-        channels = 4 if args.use_encoding else 3
+        channels = 4 if (args.use_encoding or args.use_depth) else 3
         resolution = 32 if args.use_encoding else 128
         model = FlowModel(
             AttentionAutoEncoder(
@@ -156,7 +163,7 @@ def main():
         autoencoder = SimpleAutoEncoder().cuda().eval()
         autoencoder.load("weight_checkpoints/SimpleAutoEncoder_4_0001.pth")
     elif args.mode == "rotate":
-        channels = 4 if args.use_encoding else 3
+        channels = 4 if (args.use_encoding or args.use_depth) else 3
         resolution = 32 if args.use_encoding else 128
         model = RegressionModel(
             AttentionAutoEncoder(

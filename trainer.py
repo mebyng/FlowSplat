@@ -135,7 +135,13 @@ class Trainer:
             # In rotate mode, there's one fixed target per input, so j is meaningless
             # In generate/encode mode, j represents different random samples
             n_loops = 1 if self.mode != "generate" else self.logger.n_samples
-            results[name] = {"input": [], "target": [], "pred": [], "intermediates": []}
+            results[name] = {
+                "input": [],
+                "target": [],
+                "pred": [],
+                "intermediates": [],
+                "depth": [],
+            }
 
             input, target, cameras = self._prepare_batch(batch)
             for j in range(n_loops):
@@ -170,6 +176,10 @@ class Trainer:
                     results[name]["target"].append(target)
                     results[name]["pred"].append(pred)
                     results[name]["intermediates"].append(intermediates)
+                    if dataset.use_depth and not dataset.use_encoding:
+                        results[name]["depth"].append(
+                            (target[:, 3:4], pred[:, 3:4])
+                        )
 
         self.logger.save(results, epoch, final=final)
 

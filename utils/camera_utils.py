@@ -63,10 +63,10 @@ def compute_plucker(
     R = camera_matrix[:, :3, :3]  # (N, 3, 3)
     t = camera_matrix[:, :3, 3:4]  # (N, 3, 1)
 
-    # In this project, the pose matrix is stored as a world-to-camera basis transform, so
-    # the camera center in world coordinates is the inverse rotation applied to the camera
-    # translation: C = R^T @ t.
-    camera_center = torch.matmul(R.transpose(-2, -1), t).squeeze(-1)  # (N, 3)
+    # Dataset poses are camera-to-world transforms: p_world = R @ p_camera + t.
+    # Their translation is therefore already the camera center in world coordinates.
+    # (For a world-to-camera transform, the center would instead be -R^T @ t.)
+    camera_center = t.squeeze(-1)  # (N, 3)
 
     # Extract camera intrinsics
     fx = intrinsics[:, 0, 0]  # (N,)
@@ -86,20 +86,20 @@ def compute_plucker(
     plucker_coords = []
 
     for i in range(batch_size):
-        # In this pose convention, the camera-space principal axis is +Z, and the world-space
-        # ray is obtained by applying the inverse rotation to that camera-space vector.
+        # Pyrender uses an OpenGL camera, so its local forward axis is -Z. The
+        # world-space ray is obtained by applying the camera-to-world rotation.
         x_cam = (u - cx[i]) / fx[i]  # (height, width)
         y_cam = (cy[i] - v) / fy[
             i
         ]  # (height, width); flip row axis for image-space convention
-        z_cam = torch.ones_like(x_cam)  # (height, width)
+        z_cam = -torch.ones_like(x_cam)  # (height, width)
 
         ray_dir_cam = torch.stack([x_cam, y_cam, z_cam], dim=-1)  # (height, width, 3)
         ray_dir_cam = ray_dir_cam / (
             torch.norm(ray_dir_cam, dim=-1, keepdim=True) + 1e-8
         )
 
-        # Transform into world space using the inverse rotation basis of the pose matrix.
+        # Transform into world space using the camera-to-world rotation basis.
         ray_dir_world = torch.matmul(
             ray_dir_cam, R[i].transpose(0, 1)
         )  # (height, width, 3)

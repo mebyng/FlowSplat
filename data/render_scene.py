@@ -156,12 +156,16 @@ def render_views_random(
         cam_node = scene.add(camera, pose=pose)
         color, depth = renderer.render(scene)
         fname = f"{output_dir}/render_rand_{idx:04d}.png"
+        depth_fname = f"depth_rand_{idx:04d}.npy"
         Image.fromarray(color).save(fname)
+        # Preserve the renderer's float depth instead of quantizing it to an image.
+        np.save(os.path.join(output_dir, depth_fname), depth.astype(np.float32))
         scene.remove_node(cam_node)
 
         mat_flat = pose.reshape(-1).tolist()
         record = {f"m{j}": float(mat_flat[j]) for j in range(16)}
         record["filename"] = os.path.basename(fname)
+        record["depth_filename"] = depth_fname
         records.append(record)
 
     renderer.delete()
@@ -170,7 +174,7 @@ def render_views_random(
         csv_path = os.path.join(output_dir, "camera_matrices.csv")
 
     if records:
-        fieldnames = ["filename"] + [f"m{j}" for j in range(16)]
+        fieldnames = ["filename", "depth_filename"] + [f"m{j}" for j in range(16)]
         with open(csv_path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()

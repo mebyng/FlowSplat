@@ -4,7 +4,6 @@ from typing import Any
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
-from torchvision.utils import save_image
 
 from data import ViewDataset
 
@@ -62,7 +61,11 @@ class SampleLogger:
         ].tolist()
 
     def _create_random_inputs(self):
-        channels = 64 if self.datasets[0][1].use_encoding else 3
+        channels = (
+            4
+            if (self.datasets[0][1].use_encoding or self.datasets[0][1].use_depth)
+            else 3
+        )
         return [
             torch.randn(1, channels, self.resolution, self.resolution)
             for _ in range(self.n_samples)
@@ -84,6 +87,16 @@ class SampleLogger:
         if epoch is None:
             raise ValueError("epoch is required when final=False")
         return self.log_path / f"epoch_{epoch:05d}"
+
+    @staticmethod
+    def _depth_comparison(target: torch.Tensor, prediction: torch.Tensor):
+        """Create a normalized target/predicted depth panel for TensorBoard."""
+        target = target.clamp_min(0)
+        prediction = prediction.clamp_min(0)
+        scale = torch.maximum(target.amax(), prediction.amax()).clamp_min(1e-6)
+        comparison = torch.cat([target / scale, prediction / scale], dim=-1)
+        # TensorBoard's add_images expects RGB tensors in this project version.
+        return comparison.repeat(1, 3, 1, 1)
 
     def save(self, results, epoch: int, final: bool = False):
         save_dir = self.checkpoint_dir(epoch=epoch, final=final)
@@ -108,15 +121,29 @@ class SampleLogger:
                     # save_image(val_pred, str(subset_dir / f"{i}_{j}_prediction.png"))
 
                     combined = torch.cat(
-                        [val_input[:, :3], val_target, val_pred], dim=-1
+                        [val_input[:, :3], val_target[:, :3], val_pred[:, :3]], dim=-1
                     )
                     self.writer.add_images(
                         f"images_{name}/combined_{i}_{j}", combined, epoch
                     )
                     if self.mode == "generate":
-                        process = torch.cat(val_intermediates, dim=-1)
+                        # RGB-D flow states have a fourth depth channel. Depth is
+                        # logged separately below, while this panel shows RGB only.
+                        process = torch.cat(
+                            [inter[:, :3] for inter in val_intermediates], dim=-1
+                        )
                         self.writer.add_images(
                             f"generation_{name}/{i}_{j}", process, epoch
+                        )
+
+                    if j < len(data.get("depth", [])):
+                        target_depth, predicted_depth = data["depth"][j]
+                        depth_panel = self._depth_comparison(
+                            target_depth[i : i + 1],
+                            predicted_depth[i : i + 1],
+                        )
+                        self.writer.add_images(
+                            f"depth_{name}/{i}_{j}", depth_panel, epoch
                         )
 
     def close(self):

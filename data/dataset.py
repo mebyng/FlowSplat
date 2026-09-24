@@ -31,6 +31,7 @@ class ViewDataset(Dataset):
         target_transform=default_transform,
         random_matching=True,
         use_encoding=False,
+        use_depth=False,
         max_images=None,
     ):
         self.root = Path(root) / split
@@ -40,8 +41,10 @@ class ViewDataset(Dataset):
         self.mode = mode
         self.random_matching = random_matching
         self.use_encoding = use_encoding
+        self.use_depth = use_depth
         self.samples = []
         self.scene_info = {}
+        self.scene_depths = {}
         self.scene_intrinsics = {}
 
         if not self.root.exists():
@@ -53,6 +56,7 @@ class ViewDataset(Dataset):
 
         for scene_dir in scene_dirs:
             image_list = []
+            depth_list = []
             csv_path = scene_dir / "camera_matrices.csv"
             intrinsic_path = scene_dir / "intrinsics.csv"
             if not csv_path.exists():
@@ -74,6 +78,15 @@ class ViewDataset(Dataset):
                         mat.flat[j] = float(row.get(f"m{j}", 0.0))
                     img_path = scene_dir / filename
                     if img_path.exists():
+                        if self.use_depth:
+                            depth_filename = row.get("depth_filename")
+                            depth_path = scene_dir / depth_filename if depth_filename else None
+                            if depth_path is None or not depth_path.exists():
+                                raise FileNotFoundError(
+                                    f"depth_filename is missing or invalid for {img_path}; "
+                                    "regenerate this dataset with the updated renderer"
+                                )
+                            depth_list.append(depth_path)
                         image_list.append((img_path, mat))
             with open(intrinsic_path, newline="") as f:
                 reader = csv.reader(f)
@@ -86,6 +99,8 @@ class ViewDataset(Dataset):
                     f"Not enough images listed in camera_matrices.csv for {scene_dir}"
                 )
             self.scene_info[scene_dir] = image_list
+            if self.use_depth:
+                self.scene_depths[scene_dir] = depth_list
             self.scene_intrinsics[scene_dir] = intrinsics
             for idx in range(len(image_list)):
                 if max_images is not None and len(self.samples) >= max_images:
@@ -112,6 +127,12 @@ class ViewDataset(Dataset):
         image = Image.open(path).convert("RGB")
         image = transform(image)
         return image
+
+    def _load_depth(self, path):
+        depth = np.load(path).astype(np.float32, copy=False)
+        if depth.ndim != 2:
+            raise ValueError(f"expected a 2D depth map in {path}, got {depth.shape}")
+        return torch.from_numpy(depth)
 
     def __getitem__(self, idx):
         scene_dir, img_idx = self.samples[idx]
@@ -142,6 +163,15 @@ class ViewDataset(Dataset):
         else:
             input_image = self._load_image(input_path, self.transform)
             target_image = self._load_image(target_path, self.target_transform)
+
+        # In raw mode, form RGB-D so the autoencoder can encode all four channels.
+        # In encoded mode, the .pt tensors are already RGB-D latents and must not
+        # receive another raw depth channel.
+        if self.use_depth and not self.use_encoding:
+            input_depth = self._load_depth(self.scene_depths[scene_dir][img_idx])
+            target_depth = self._load_depth(self.scene_depths[scene_dir][next_idx])
+            input_image = torch.cat([input_image, input_depth.unsqueeze(0)], dim=0)
+            target_image = torch.cat([target_image, target_depth.unsqueeze(0)], dim=0)
 
         if self.mode == "rotate" or self.mode == "generate":
             return input_image, target_image, input_pose, target_pose, intrinsics
