@@ -10,6 +10,8 @@ an RGB-D view from the original dataset image and append it to the cloud.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -19,7 +21,11 @@ from viewer.orbit_viewer import OrbitPointCloudViewer
 from viewer.point_cloud import depth_to_point_cloud
 
 
-def parse_args() -> argparse.Namespace:
+if TYPE_CHECKING:
+    from viewer.predictor import ViewPredictor
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="View RGB-D points and generate additional views with Space."
     )
@@ -27,7 +33,9 @@ def parse_args() -> argparse.Namespace:
         "dataset_path",
         help="Dataset root containing training/ and validation/ directories.",
     )
-    parser.add_argument("index", type=int, help="Zero-based index in the selected split.")
+    parser.add_argument(
+        "index", type=int, help="Zero-based index in the selected split."
+    )
     parser.add_argument(
         "--split",
         choices=["training", "validation"],
@@ -55,11 +63,16 @@ def parse_args() -> argparse.Namespace:
         default=2.0,
         help="Viewer orbit radius; matches generate_dataset's camera radius by default.",
     )
-    parser.add_argument("--run-name", help="RGB-D run whose final checkpoint or highest saved epoch is loaded.")
+    parser.add_argument(
+        "--run-name",
+        help="RGB-D run whose final checkpoint or highest saved epoch is loaded.",
+    )
     parser.add_argument("--logdir", default="runs", help="Training runs directory.")
-    parser.add_argument("--device", default="auto", help="Inference device: auto, cpu, cuda, etc.")
+    parser.add_argument(
+        "--device", default="auto", help="Inference device: auto, cpu, cuda, etc."
+    )
     parser.add_argument("--steps", type=int, default=10, help="Flow integration steps.")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def make_initial_depth(image: torch.Tensor, value: float) -> torch.Tensor:
@@ -67,6 +80,41 @@ def make_initial_depth(image: torch.Tensor, value: float) -> torch.Tensor:
     if value <= 0:
         raise ValueError("--depth must be positive")
     return torch.full(image.shape[1:], value, dtype=image.dtype, device=image.device)
+
+
+def make_prediction_callback(
+    viewer: OrbitPointCloudViewer,
+    predictor: ViewPredictor,
+    image: torch.Tensor,
+    depth: torch.Tensor,
+    source_pose: torch.Tensor,
+    intrinsics: torch.Tensor,
+) -> Callable[[torch.Tensor], None]:
+    """Capture the original RGB-D source and append each predicted target view."""
+    # Keep this source and its pose fixed for every requested target view.
+    original_rgbd = torch.cat([image, depth.unsqueeze(0)], dim=0).clone()
+    original_pose = source_pose.clone()
+
+    def generate_view(target_pose: torch.Tensor) -> None:
+        print("Predicting view from the original image...", flush=True)
+        try:
+            prediction = predictor.predict(
+                original_rgbd, original_pose, target_pose, intrinsics
+            )
+            new_points, new_colors = depth_to_point_cloud(
+                prediction[:3], prediction[3], intrinsics, target_pose
+            )
+            valid = torch.isfinite(new_points).all(dim=1) & torch.isfinite(
+                new_colors
+            ).all(dim=1)
+            viewer.add_point_cloud(new_points[valid], new_colors[valid])
+            print(
+                f"Added {int(valid.sum()):,} points. Rotate and press Space for another view."
+            )
+        except (RuntimeError, ValueError) as exc:
+            print(f"Could not generate view: {exc}")
+
+    return generate_view
 
 
 def main() -> None:
@@ -118,26 +166,9 @@ def main() -> None:
     viewer.set_point_cloud(points, colors)
 
     if predictor is not None:
-        # Keep this source and its pose fixed for every requested target view.
-        original_rgbd = torch.cat([image, depth.unsqueeze(0)], dim=0).clone()
-        original_pose = source_pose.clone()
-
-        def generate_view(target_pose):
-            print("Predicting view from the original image...", flush=True)
-            try:
-                prediction = predictor.predict(
-                    original_rgbd, original_pose, target_pose, intrinsics
-                )
-                new_points, new_colors = depth_to_point_cloud(
-                    prediction[:3], prediction[3], intrinsics, target_pose
-                )
-                valid = torch.isfinite(new_points).all(dim=1) & torch.isfinite(new_colors).all(dim=1)
-                viewer.add_point_cloud(new_points[valid], new_colors[valid])
-                print(f"Added {int(valid.sum()):,} points. Rotate and press Space for another view.")
-            except (RuntimeError, ValueError) as exc:
-                print(f"Could not generate view: {exc}")
-
-        viewer.on_space = generate_view
+        viewer.on_space = make_prediction_callback(
+            viewer, predictor, image, depth, source_pose, intrinsics
+        )
         print("Drag to orbit; press Space to generate and add a view.")
 
     print(

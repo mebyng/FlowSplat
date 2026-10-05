@@ -56,88 +56,37 @@ class OrbitPointCloudViewer:
             raise ValueError(f"expected points shape (N, 3), got {tuple(points.shape)}")
         if colors.shape != points.shape:
             raise ValueError("colors must have the same (N, 3) shape as points")
-        return points.detach().cpu().float().contiguous(), colors.detach().cpu().float().contiguous()
+        return (
+            points.detach().cpu().float().contiguous(),
+            colors.detach().cpu().float().contiguous(),
+        )
 
     def run(self) -> None:
         """Open the viewer. This blocks until the viewer window is closed."""
         try:
             import pyglet
-            from pyglet import gl
-            from pyglet.graphics import Batch
-            from pyglet.graphics.shader import Shader, ShaderProgram
-            from pyglet.math import Mat4, Vec3
+            from .renderer import PointCloudRenderer
         except ImportError as exc:
-            raise RuntimeError("OrbitPointCloudViewer requires the optional pyglet dependency") from exc
+            raise RuntimeError(
+                "OrbitPointCloudViewer requires the optional pyglet dependency"
+            ) from exc
 
-        window = pyglet.window.Window(self.width, self.height, caption="FlowSplat point cloud", resizable=True)
-        self._window = window
-        gl.glEnable(gl.GL_DEPTH_TEST)
-        gl.glEnable(gl.GL_PROGRAM_POINT_SIZE)
-        gl.glClearColor(0.05, 0.05, 0.07, 1.0)
-
-        # Pyglet 2 creates a core OpenGL context, where legacy fixed-function
-        # calls such as glMatrixMode and glBegin are unavailable. This small
-        # shader uses Pyglet's WindowBlock for projection and view matrices.
-        vertex_source = """#version 150 core
-            in vec3 position;
-            in vec3 color;
-            out vec3 point_color;
-            uniform WindowBlock {
-                mat4 projection;
-                mat4 view;
-            } window;
-            void main() {
-                gl_Position = window.projection * window.view * vec4(position, 1.0);
-                gl_PointSize = POINT_SIZE;
-                point_color = color;
-            }
-        """.replace("POINT_SIZE", f"{self.point_size:.1f}")
-        fragment_source = """#version 150 core
-            in vec3 point_color;
-            out vec4 final_color;
-            void main() {
-                final_color = vec4(point_color, 1.0);
-            }
-        """
-        program = ShaderProgram(
-            Shader(vertex_source, "vertex"), Shader(fragment_source, "fragment")
+        window = pyglet.window.Window(
+            self.width, self.height, caption="FlowSplat point cloud", resizable=True
         )
-        batch = Batch()
-        vertex_list = None
-        uploaded_cloud_version = -1
+        self._window = window
 
-        def refresh_point_buffer():
-            nonlocal vertex_list, uploaded_cloud_version
-            if vertex_list is not None:
-                vertex_list.delete()
-                vertex_list = None
-            if len(self._points):
-                vertex_list = program.vertex_list(
-                    len(self._points),
-                    gl.GL_POINTS,
-                    batch=batch,
-                    position=("f", self._points.flatten().tolist()),
-                    color=("f", self._colors.clamp(0, 1).flatten().tolist()),
-                )
-            uploaded_cloud_version = self._cloud_version
+        renderer = PointCloudRenderer(self.point_size)
 
         @window.event
         def on_draw():
-            window.clear()
-            pose = self.camera_pose
-            eye = pose[:3, 3]
-            center = torch.zeros(3)
-            up = pose[:3, 1]
-            window.projection = Mat4.perspective_projection(
-                window.width / max(window.height, 1), 0.01, 100.0, fov=45.0
+            renderer.draw(
+                window,
+                self.camera_pose,
+                self._points,
+                self._colors,
+                self._cloud_version,
             )
-            window.view = Mat4.look_at(
-                Vec3(*eye.tolist()), Vec3(*center.tolist()), Vec3(*up.tolist())
-            )
-            if uploaded_cloud_version != self._cloud_version:
-                refresh_point_buffer()
-            if vertex_list is not None:
-                batch.draw()
 
         @window.event
         def on_mouse_drag(x, y, dx, dy, buttons, modifiers):
