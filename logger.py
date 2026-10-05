@@ -20,6 +20,7 @@ class SampleLogger:
         resolution: int,
         autoencoder: torch.nn.Module | None = None,
         metadata: dict[str, Any] | None = None,
+        validation_seed: int = 0,
     ):
         if n_images <= 0 or n_samples <= 0:
             raise ValueError("n_images and n_samples must be positive integers")
@@ -28,6 +29,7 @@ class SampleLogger:
         if validation_dataset is not None:
             self.datasets.append(("validation", validation_dataset))
 
+        self.validation_seed = validation_seed
         self.n_images = n_images
         self.n_samples = n_samples
         self.log_path = Path(log_path)
@@ -61,13 +63,16 @@ class SampleLogger:
         ].tolist()
 
     def _create_random_inputs(self):
+        generator = torch.Generator().manual_seed(self.validation_seed)
         channels = (
             4
             if (self.datasets[0][1].use_encoding or self.datasets[0][1].use_depth)
             else 3
         )
         return [
-            torch.randn(1, channels, self.resolution, self.resolution)
+            torch.randn(
+                1, channels, self.resolution, self.resolution, generator=generator
+            )
             for _ in range(self.n_samples)
         ]
 

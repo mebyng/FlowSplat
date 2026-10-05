@@ -15,15 +15,16 @@ from models import (
 )
 from trainer import Trainer
 from utils.checkpoints import resolve_checkpoint_path
+from utils.randomness import seed_everything
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Train a Diffusion Model to generate rotated scenes."
     )
     parser.add_argument("--epochs", type=int, default=1000)
     parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument(
         "--scheduler",
         type=str,
@@ -39,6 +40,25 @@ def parse_args():
     )
     parser.add_argument(
         "--eta-min", type=float, default=1e-6, help="Minimum LR for cosine scheduler"
+    )
+    parser.add_argument("--seed", type=int, default=42, help="Training RNG seed.")
+    parser.add_argument(
+        "--validation-seed",
+        type=int,
+        default=0,
+        help="Independent seed for evaluation noise.",
+    )
+    parser.add_argument(
+        "--grad-clip",
+        type=float,
+        default=1.0,
+        help="Maximum gradient norm; 0 disables clipping.",
+    )
+    parser.add_argument(
+        "--warmup-epochs",
+        type=int,
+        default=2,
+        help="Linear LR warmup from 10%% to 100%%; 0 disables warmup.",
     )
     parser.add_argument("--dataset-path", type=str, default="datasets/small_512/")
     parser.add_argument(
@@ -86,12 +106,19 @@ def parse_args():
         action="store_true",
         help="Append ground-truth depth as a fourth RGB-D channel for rotation/flow training.",
     )
-    return parser.parse_args()
-
+    args = parser.parse_args(argv)
+    if args.epochs <= 0 or not 0 <= args.warmup_epochs <= args.epochs:
+        parser.error("require epochs > 0 and 0 <= warmup-epochs <= epochs")
+    if args.grad_clip < 0:
+        parser.error("grad-clip must be nonnegative")
+    if not 0 <= args.seed < 2**32 or not 0 <= args.validation_seed < 2**32:
+        parser.error("seeds must be in [0, 2**32)")
+    return args
 
 
 def main():
     args = parse_args()
+    seed_everything(args.seed)
 
     dataset = ViewDataset(
         args.dataset_path,
@@ -153,13 +180,17 @@ def main():
     print(f"  epochs: {args.epochs}")
     print(f"  learning rate: {args.lr}")
     print(f"  scheduler: {args.scheduler}")
+    print(f"  warmup epochs: {args.warmup_epochs}; gradient clip: {args.grad_clip}")
+    print(f"  training seed: {args.seed}; validation seed: {args.validation_seed}")
     print(f"  model parameters: {num_params:,} total, {num_trainable:,} trainable")
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     if args.scheduler == "cosine":
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=args.epochs, eta_min=args.eta_min
+            optimizer,
+            T_max=max(1, args.epochs - args.warmup_epochs),
+            eta_min=args.eta_min,
         )
     elif args.scheduler == "step":
         scheduler = torch.optim.lr_scheduler.StepLR(
@@ -198,6 +229,7 @@ def main():
         resolution=resolution,
         autoencoder=autoencoder,
         metadata=metadata,
+        validation_seed=args.validation_seed,
     )
 
     trainer = Trainer(
@@ -211,6 +243,8 @@ def main():
         rotation_encoding=args.rotation_encoding,
         batch_size=args.batch_size,
         scheduler=scheduler,
+        grad_clip=args.grad_clip,
+        warmup_epochs=args.warmup_epochs,
         savepoint=args.savepoint,
         resolution=resolution,
     )

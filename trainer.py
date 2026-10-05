@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 import torch
@@ -6,9 +5,8 @@ from torch.utils.data import DataLoader
 from tqdm import trange
 
 from data import ViewDataset
-from utils import compute_plucker
 from logger import SampleLogger
-from utils.camera_utils import rotation_matrix_to_6d
+from utils.randomness import rng_state, restore_rng_state
 
 
 class Trainer:
@@ -26,7 +24,14 @@ class Trainer:
         scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
         savepoint: int = 10,
         resolution: int = 128,
+        grad_clip: float = 1.0,
+        warmup_epochs: int = 0,
     ):
+        if grad_clip < 0 or warmup_epochs < 0:
+            raise ValueError("grad_clip and warmup_epochs must be nonnegative")
+        self.grad_clip = grad_clip
+        self.warmup_epochs = warmup_epochs
+        self.base_lrs = [group["lr"] for group in optimizer.param_groups]
         self.dataset = dataset
         self.validation_dataset = validation_dataset
         self.autoencoder = autoencoder
@@ -69,6 +74,12 @@ class Trainer:
         loss, loss_dict = self.model.train_step(input, target, cameras)
         self.optimizer.zero_grad()
         loss.backward()
+        grad_norm = torch.nn.utils.clip_grad_norm_(
+            self.model.parameters(),
+            self.grad_clip or float("inf"),
+            error_if_nonfinite=True,
+        )
+        loss_dict = dict(loss_dict, grad_norm=grad_norm.detach())
         self.optimizer.step()
         return loss_dict, target.shape[0]
 
@@ -90,12 +101,20 @@ class Trainer:
             )  # TODO does not work for AE
         return loss_dict, target.shape[0]
 
-    def train_epoch(self):
+    def train_epoch(self, epoch: int = 1):
+        max_grad_norm = 0.0
         total_count = 0
         loss_sums = {}
         self.model.train()
-        for batch in self.train_loader:
+        for batch_index, batch in enumerate(self.train_loader):
+            if epoch <= self.warmup_epochs:
+                warmup_steps = self.warmup_epochs * len(self.train_loader)
+                step = (epoch - 1) * len(self.train_loader) + batch_index
+                factor = 0.1 + 0.9 * step / max(warmup_steps - 1, 1)
+                for group, base_lr in zip(self.optimizer.param_groups, self.base_lrs):
+                    group["lr"] = base_lr * factor
             loss_dict, count = self.train_step(batch)
+            max_grad_norm = max(max_grad_norm, loss_dict["grad_norm"].item())
             total_count += count
             for name, value in loss_dict.items():
                 loss_sums[name] = (
@@ -103,7 +122,9 @@ class Trainer:
                 )
 
         scale = max(total_count, 1)
-        return {name: value / scale for name, value in loss_sums.items()}
+        metrics = {name: value / scale for name, value in loss_sums.items()}
+        metrics["grad_norm_max"] = max_grad_norm
+        return metrics
 
     def val_epoch(self):
         if self.val_loader is None:
@@ -177,9 +198,7 @@ class Trainer:
                     results[name]["pred"].append(pred)
                     results[name]["intermediates"].append(intermediates)
                     if dataset.use_depth and not dataset.use_encoding:
-                        results[name]["depth"].append(
-                            (target[:, 3:4], pred[:, 3:4])
-                        )
+                        results[name]["depth"].append((target[:, 3:4], pred[:, 3:4]))
 
         self.logger.save(results, epoch, final=final)
 
@@ -195,6 +214,11 @@ class Trainer:
         save_path.parent.mkdir(parents=True, exist_ok=True)
 
         checkpoint = {
+            "epoch": epoch,
+            "rng_state": rng_state(),
+            "warmup_epochs": self.warmup_epochs,
+            "base_lrs": self.base_lrs,
+            "grad_clip": self.grad_clip,
             "model_state_dict": self.model.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
         }
@@ -211,6 +235,7 @@ class Trainer:
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
 
         scheduler_loaded = False
+        fresh_lrs = [group["lr"] for group in self.optimizer.param_groups]
         if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
             self.model.model.load_state_dict(checkpoint["model_state_dict"])
             self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
@@ -220,6 +245,7 @@ class Trainer:
                 and "scheduler_state_dict" in checkpoint
             ):
                 self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+                scheduler_loaded = True
         else:
             self.model.model.load_state_dict(checkpoint)
 
@@ -227,10 +253,23 @@ class Trainer:
             for param_group in self.optimizer.param_groups:
                 param_group["lr"] = lr
 
+        if not continued:
+            for group, fresh_lr in zip(self.optimizer.param_groups, fresh_lrs):
+                group["lr"] = fresh_lr if lr is None else lr
+                group["initial_lr"] = group["lr"]
+            self.base_lrs = [group["lr"] for group in self.optimizer.param_groups]
+
         if continued:
+            self.warmup_epochs = checkpoint.get("warmup_epochs", 0)
+            self.base_lrs = checkpoint.get("base_lrs", self.base_lrs)
+            self.grad_clip = checkpoint.get("grad_clip", self.grad_clip)
+            if "rng_state" in checkpoint:
+                restore_rng_state(checkpoint["rng_state"])
             # Extract epoch number from the checkpoint path if possible
             epoch_str = checkpoint_path.parent.name
-            if epoch_str.startswith("epoch_"):
+            if checkpoint.get("epoch") is not None:
+                self.start_epoch = checkpoint["epoch"] + 1
+            elif epoch_str.startswith("epoch_"):
                 self.start_epoch = int(epoch_str.split("_")[-1]) + 1
             else:
                 self.start_epoch = 1
@@ -238,9 +277,11 @@ class Trainer:
         return checkpoint
 
     def train(self, epochs):
+        if self.start_epoch > epochs:
+            raise ValueError("checkpoint has already reached the requested epoch count")
         epoch_bar = trange(self.start_epoch, epochs + 1, desc="Training", unit="epoch")
         for epoch in epoch_bar:
-            train_metrics = self.train_epoch()
+            train_metrics = self.train_epoch(epoch)
             avg_loss = train_metrics.get("total", 0.0)
             epoch_bar.set_postfix({"loss": f"{avg_loss:.6f}"})
 
@@ -249,13 +290,12 @@ class Trainer:
                 val_metrics = self.val_epoch()
                 self.logger.log_metrics(val_metrics, epoch, subset="validation")
 
-            if self.scheduler is not None:
-                current_lr = self.optimizer.param_groups[0]["lr"]
-                self.logger.log_metrics(
-                    {"learning_rate": current_lr}, epoch, subset="train"
-                )
+            current_lr = self.optimizer.param_groups[0]["lr"]
+            self.logger.log_metrics(
+                {"learning_rate": current_lr}, epoch, subset="train"
+            )
 
-            if self.scheduler is not None:
+            if self.scheduler is not None and epoch > self.warmup_epochs:
                 self.scheduler.step()
 
             if epoch % self.savepoint == 0:
