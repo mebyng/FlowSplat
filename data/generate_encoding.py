@@ -1,3 +1,4 @@
+import argparse
 from pathlib import Path
 import csv
 import sys
@@ -7,8 +8,8 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from data import ViewDataset
-from models import SimpleAutoEncoder
+from data import ViewDataset  # noqa: E402
+from utils.checkpoints import load_encoding_model  # noqa: E402
 
 
 def generate_encoding(
@@ -57,7 +58,7 @@ def generate_encoding(
 
         image_path = dataset.scene_info[scene_dir][img_idx][0]
         encoding_dir = scene_dir / output_dirname
-        encoding_dir.mkdir(exist_ok=True)
+        encoding_dir.mkdir(parents=True, exist_ok=True)
         encoding_path = encoding_dir / f"{image_path.stem}.pt"
         if not overwrite and encoding_path.exists():
             continue
@@ -82,11 +83,62 @@ def generate_encoding(
             writer.writerows(rows)
 
 
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Precompute dataset latents from an autoencoder run."
+    )
+    parser.add_argument("--dataset-path", required=True)
+    parser.add_argument(
+        "--run-name",
+        required=True,
+        help="AE run under <logdir>/encode; final checkpoint preferred.",
+    )
+    parser.add_argument("--logdir", default="runs")
+    parser.add_argument(
+        "--split", choices=["training", "validation", "both"], default="both"
+    )
+    parser.add_argument("--device", default="auto", help="auto, cpu, cuda, or cuda:N")
+    parser.add_argument("--output-dirname", default="encodings")
+    parser.add_argument("--overwrite", action="store_true")
+    args = parser.parse_args(argv)
+    directory = Path(args.output_dirname)
+    if directory.is_absolute() or ".." in directory.parts or not directory.parts:
+        parser.error("--output-dirname must be a relative directory within each scene")
+    return args
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    device = (
+        ("cuda" if torch.cuda.is_available() else "cpu")
+        if args.device == "auto"
+        else args.device
+    )
+    autoencoder, checkpoint = load_encoding_model(args.run_name, args.logdir, device)
+    print(f"Loaded autoencoder: {checkpoint}")
+    channels = autoencoder.initial_conv[0].in_channels
+    if channels not in (3, 4):
+        raise ValueError(
+            f"Expected an RGB or RGB-D autoencoder, got {channels} input channels"
+        )
+    splits = ("training", "validation") if args.split == "both" else (args.split,)
+    for split in splits:
+        dataset = ViewDataset(
+            args.dataset_path,
+            split=split,
+            mode="encode",
+            random_matching=False,
+            use_depth=channels == 4,
+        )
+        print(f"Encoding {split}: {len(dataset)} images")
+        generate_encoding(
+            dataset,
+            autoencoder,
+            device=device,
+            output_dirname=args.output_dirname,
+            overwrite=args.overwrite,
+        )
+
+
 if __name__ == "__main__":
-    dataset_path = "datasets/single_512"
-    dataset_train = ViewDataset(dataset_path, split="training", mode="encode")
-    dataset_val = ViewDataset(dataset_path, split="validation", mode="encode")
-    autoencoder = SimpleAutoEncoder().cuda()
-    autoencoder.load("weight_checkpoints/SimpleAutoEncoder_4_0001.pth")
-    generate_encoding(dataset_train, autoencoder, overwrite=True)
-    generate_encoding(dataset_val, autoencoder, overwrite=True)
+    main()

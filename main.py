@@ -14,7 +14,7 @@ from models import (
     AttentionAutoEncoder,
 )
 from trainer import Trainer
-from utils.checkpoints import resolve_checkpoint_path
+from utils.checkpoints import load_encoding_model, resolve_checkpoint_path
 from utils.randomness import seed_everything
 
 
@@ -98,8 +98,10 @@ def parse_args(argv=None):
     )
     parser.add_argument(
         "--use-encoding",
-        action="store_true",
-        help="Whether to use AE encoding",
+        type=str,
+        metavar="RUN_NAME",
+        default=None,
+        help="Use precomputed latents and load the AE run from <logdir>/encode/RUN_NAME (final checkpoint preferred).",
     )
     parser.add_argument(
         "--use-depth",
@@ -107,6 +109,8 @@ def parse_args(argv=None):
         help="Append ground-truth depth as a fourth RGB-D channel for rotation/flow training.",
     )
     args = parser.parse_args(argv)
+    if args.use_encoding and args.mode == "encode":
+        parser.error("--use-encoding is only supported for generate and rotate modes")
     if args.epochs <= 0 or not 0 <= args.warmup_epochs <= args.epochs:
         parser.error("require epochs > 0 and 0 <= warmup-epochs <= epochs")
     if args.grad_clip < 0:
@@ -119,12 +123,19 @@ def parse_args(argv=None):
 def main():
     args = parse_args()
     seed_everything(args.seed)
+    autoencoder = None
+    encoding_checkpoint = None
+    if args.use_encoding:
+        autoencoder, encoding_checkpoint = load_encoding_model(
+            args.use_encoding, args.logdir
+        )
+        print(f"Loading autoencoder checkpoint from: {encoding_checkpoint}")
 
     dataset = ViewDataset(
         args.dataset_path,
         split="training",
         mode=args.mode,
-        use_encoding=args.use_encoding,
+        use_encoding=bool(args.use_encoding),
         use_depth=args.use_depth,
     )
     val_dataset = ViewDataset(
@@ -132,7 +143,7 @@ def main():
         split="validation",
         mode=args.mode,
         random_matching=False,
-        use_encoding=args.use_encoding,
+        use_encoding=bool(args.use_encoding),
         use_depth=args.use_depth,
     )  # Use deterministic matching for validation
     if args.mode == "generate":
@@ -147,8 +158,6 @@ def main():
             ),
         ).cuda()
 
-        autoencoder = SimpleAutoEncoder().cuda().eval()
-        autoencoder.load("weight_checkpoints/SimpleAutoEncoder_4_0001.pth")
     elif args.mode == "rotate":
         channels = 4 if (args.use_encoding or args.use_depth) else 3
         resolution = 32 if args.use_encoding else 128
@@ -161,10 +170,10 @@ def main():
             ),
         ).cuda()
 
-        autoencoder = SimpleAutoEncoder().cuda().eval()
-        autoencoder.load("weight_checkpoints/SimpleAutoEncoder_4_0001.pth")
     elif args.mode == "encode":
-        model = AutoEncoder(SimpleAutoEncoder()).cuda()
+        model = AutoEncoder(
+            SimpleAutoEncoder(in_channels=4 if args.use_depth else 3, latent_dim=4)
+        ).cuda()
         autoencoder = None
         resolution = 32
     else:
@@ -216,6 +225,7 @@ def main():
             "training_samples": len(dataset),
             "validation_samples": len(val_dataset),
             "log_dir": log_dir,
+            "encoding_checkpoint": encoding_checkpoint,
         }
     )
 

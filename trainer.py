@@ -56,12 +56,18 @@ class Trainer:
             )
 
     def _prepare_batch(self, batch):
+        """Move a batch to the model device and provide reconstruction targets for AE."""
+        device = self.model.device()
+        if self.mode == "encode":
+            input = batch.to(device)
+            return input, input, None
+
         input, target, input_pose, target_pose, intrinsics = batch
-        input = input.to(self.model.device())
-        target = target.to(self.model.device())
-        input_pose = input_pose.to(self.model.device())
-        target_pose = target_pose.to(self.model.device())
-        intrinsics = intrinsics.to(self.model.device())
+        input = input.to(device)
+        target = target.to(device)
+        input_pose = input_pose.to(device)
+        target_pose = target_pose.to(device)
+        intrinsics = intrinsics.to(device)
         cameras = {
             "source": input_pose,
             "target": target_pose,
@@ -95,10 +101,11 @@ class Trainer:
                 )
             else:
                 noise = None
-            prediction = self.model.generate(input, noise, cameras)
-            loss, loss_dict = self.model.criterion(
-                prediction, target
-            )  # TODO does not work for AE
+            if self.mode == "encode":
+                prediction = self.model.model(input)
+            else:
+                prediction = self.model.generate(input, noise, cameras)
+            loss, loss_dict = self.model.criterion(prediction, target)
         return loss_dict, target.shape[0]
 
     def train_epoch(self, epoch: int = 1):
@@ -180,6 +187,7 @@ class Trainer:
                     pred, intermediates = self.model.generation_log(
                         input, noise, cameras
                     )
+                    intermediates = intermediates or []
 
                     if dataset.use_encoding:
                         if self.autoencoder is None:

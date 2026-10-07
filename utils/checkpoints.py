@@ -42,3 +42,20 @@ def resolve_checkpoint_path(logdir: str, run_name: str | None):
     raise FileNotFoundError(
         f"Could not find a checkpoint for run '{run_name}' under {run_dir}"
     )
+
+
+def load_encoding_model(run_name, logdir="runs", device="cuda"):
+    import torch
+
+    from models import SimpleAutoEncoder
+
+    checkpoint_path = resolve_checkpoint_path(str(Path(logdir) / "encode"), run_name)
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    state_dict = checkpoint.get("model_state_dict", checkpoint)
+    autoencoder = SimpleAutoEncoder(
+        in_channels=state_dict["initial_conv.0.weight"].shape[1],
+        latent_dim=state_dict["down4.0.weight"].shape[0],
+    )
+    autoencoder.load_state_dict(state_dict)
+    autoencoder = autoencoder.to(device).eval().requires_grad_(False)
+    return autoencoder, checkpoint_path
