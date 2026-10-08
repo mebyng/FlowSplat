@@ -3,10 +3,47 @@
 from __future__ import annotations
 
 import torch
+from pyglet.image import ImageData
 from pyglet import gl
 from pyglet.graphics import Batch
 from pyglet.graphics.shader import Shader, ShaderProgram
 from pyglet.math import Mat4, Vec3
+
+from .splats import viewport_intrinsics
+
+
+class GaussianRenderer:
+    """Render a CUDA scene and cache its display texture until the camera changes."""
+
+    def __init__(self, scene):
+        self.scene = scene
+        self._key = None
+        self._texture = None
+
+    @torch.inference_mode()
+    def draw(self, window, pose):
+        width, height = max(window.width, 1), max(window.height, 1)
+        # Limit rasterization cost while preserving the viewport aspect ratio.
+        scale = min(1.0, 512 / max(width, height))
+        rw, rh = max(1, round(width * scale)), max(1, round(height * scale))
+        key = (width, height, tuple(pose.flatten().tolist()))
+        if key != self._key:
+            rgb = self.scene.render(pose, viewport_intrinsics(rw, rh), height=rh, width=rw)["rgb"][0]
+            pixels = (rgb.clamp(0, 1).permute(1, 2, 0) * 255).to(torch.uint8).cpu().contiguous().numpy().tobytes()
+            if self._texture is not None:
+                self._texture.delete()
+            self._texture = ImageData(rw, rh, "RGB", pixels, pitch=-rw * 3).get_texture()
+            self._key = key
+        window.clear()
+        gl.glDisable(gl.GL_DEPTH_TEST)
+        window.projection = Mat4.orthogonal_projection(0, width, 0, height, -1, 1)
+        window.view = Mat4()
+        self._texture.blit(0, 0, width=width, height=height)
+
+    def close(self):
+        if self._texture is not None:
+            self._texture.delete()
+            self._texture = None
 
 
 class PointCloudRenderer:
@@ -43,7 +80,7 @@ class PointCloudRenderer:
         self._uploaded_version = -1
         gl.glEnable(gl.GL_DEPTH_TEST)
         gl.glEnable(gl.GL_PROGRAM_POINT_SIZE)
-        gl.glClearColor(0.05, 0.05, 0.07, 1.0)
+        gl.glClearColor(1.0, 1.0, 1.0, 1.0)
 
     def _upload(self, points: torch.Tensor, colors: torch.Tensor, version: int) -> None:
         if self._vertex_list is not None:
@@ -68,6 +105,7 @@ class PointCloudRenderer:
         version: int,
     ) -> None:
         window.clear()
+        gl.glEnable(gl.GL_DEPTH_TEST)
         window.projection = Mat4.perspective_projection(
             window.width / max(window.height, 1), 0.01, 100.0, fov=45.0
         )

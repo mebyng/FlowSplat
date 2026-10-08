@@ -229,7 +229,7 @@ class GaussianModel(Wrapper):
         noise = torch.randn_like(image)
         timestep = torch.rand(batch_size, 1, device=image.device, dtype=image.dtype)
         timestep = self.min_t + (self.max_t - self.min_t) * timestep
-
+        # TODO deal correctly with the fact that the teacher expects a 4-channel input if depth is used
         with torch.no_grad():
             t = timestep[:, :, None, None]
             x_t = (1 - t) * noise + t * image.detach()

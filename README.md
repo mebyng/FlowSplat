@@ -5,8 +5,8 @@ view synthesis. The current implementation trains image-space RGB or RGB-D model
 and back-projects depth into colored point clouds for interactive inspection.
 
 The longer-term goal is **single image → novel views → 3D Gaussian scene**.
-Gaussian scene generation, Gaussian splat rendering, and image/3D consistency
-training are still planned; the current viewer renders points.
+The viewer supports point clouds and trained Gaussian scenes; Gaussian training
+uses a frozen flow teacher.
 
 ## Current implementation
 
@@ -204,6 +204,22 @@ Drag the left mouse button to orbit. With a prediction run loaded, press **Space
 to predict the current camera view from the original dataset RGB-D image and append
 its back-projected points. The source image and pose stay fixed for every request.
 The camera orbits at a fixed radius; pan and zoom are absent.
+
+Load a Gaussian scene alongside the point cloud with `--gaussian-run scene_0`
+(resolved under `runs/gaussian/`) or a checkpoint file path. Press **Tab** to switch
+between points and splats while preserving the camera. Both modes use a white
+background. Space predicts additional views only in point-cloud mode. Gaussian
+viewing requires CUDA and gsplat; no teacher is loaded. Splat rendering uses the
+same 45-degree field of view as points, caps resolution at 512 pixels on the longest
+edge, and refreshes when the camera or window size changes.
+
+```bash
+python -m viewer.view_dataset datasets/demo 0 --gaussian-run scene_0
+python -m viewer.view_dataset --gaussian-run scene_0
+```
+
+Without a dataset, the viewer starts in splat mode; Tab shows the Gaussian centers
+as colored points. When a dataset path is supplied, its index defaults to 0.
 
 Prediction requires a `generate` or `rotate` run trained with `--use-depth` and
 without `--use-encoding`, plus its `metadata.json` and checkpoint. Inference supports

@@ -31,10 +31,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "dataset_path",
+        nargs="?",
         help="Dataset root containing training/ and validation/ directories.",
     )
     parser.add_argument(
-        "index", type=int, help="Zero-based index in the selected split."
+        "index", type=int, nargs="?", default=0,
+        help="Zero-based index in the selected split (default: 0)."
     )
     parser.add_argument(
         "--split",
@@ -69,10 +71,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--logdir", default="runs", help="Training runs directory.")
     parser.add_argument(
+        "--gaussian-run",
+        help="Gaussian run under <logdir>/gaussian, or checkpoint path; Tab toggles splats.",
+    )
+    parser.add_argument(
         "--device", default="auto", help="Inference device: auto, cpu, cuda, etc."
     )
     parser.add_argument("--steps", type=int, default=10, help="Flow integration steps.")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.dataset_path is None:
+        if not args.gaussian_run:
+            parser.error("provide a dataset path or --gaussian-run")
+        if args.run_name:
+            parser.error("--run-name requires a dataset source image")
+    return args
 
 
 def make_initial_depth(image: torch.Tensor, value: float) -> torch.Tensor:
@@ -122,6 +134,20 @@ def main() -> None:
     if args.radius <= 0:
         raise ValueError("--radius must be positive")
 
+    gaussian_scene = None
+    if args.gaussian_run:
+        from viewer.splats import load_splats
+
+        gaussian_scene, checkpoint = load_splats(args.gaussian_run, args.logdir, args.device)
+        print(f"Loaded Gaussian checkpoint: {checkpoint}.")
+    viewer = OrbitPointCloudViewer(radius=args.radius, gaussian_scene=gaussian_scene)
+    if args.dataset_path is None:
+        viewer.view_mode = "splats"
+        viewer.set_point_cloud(gaussian_scene.means, gaussian_scene.colors)
+        print("Drag to orbit; Tab switches between Gaussian centers and splats.")
+        viewer.run()
+        return
+
     predictor = None
     if args.run_name:
         from viewer.predictor import ViewPredictor
@@ -157,7 +183,8 @@ def main() -> None:
     # Preserve the selected image's orbit direction while enforcing the viewer's
     # fixed dataset-generation radius.
     source_orbit = OrbitCamera.from_pose(source_pose)
-    viewer = OrbitPointCloudViewer(radius=args.radius)
+    if gaussian_scene is not None:
+        print("Press Tab to toggle point cloud/splats.")
     viewer.camera = OrbitCamera(
         radius=args.radius,
         azimuth=source_orbit.azimuth,

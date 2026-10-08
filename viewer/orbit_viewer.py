@@ -24,12 +24,15 @@ class OrbitPointCloudViewer:
         height: int = 720,
         point_size: float = 2.0,
         on_space: Callable[[torch.Tensor], None] | None = None,
+        gaussian_scene=None,
     ):
         self.camera = OrbitCamera(radius=radius)
         self.width = width
         self.height = height
         self.point_size = point_size
         self.on_space = on_space
+        self.gaussian_scene = gaussian_scene
+        self.view_mode = "points"
         self._points = torch.empty((0, 3), dtype=torch.float32)
         self._colors = torch.empty((0, 3), dtype=torch.float32)
         self._window = None
@@ -39,6 +42,11 @@ class OrbitPointCloudViewer:
     def camera_pose(self) -> torch.Tensor:
         """Current camera-to-world pose for use as a flow-model target camera."""
         return self.camera.pose()
+
+    def toggle_view_mode(self):
+        if self.gaussian_scene is not None:
+            self.view_mode = "splats" if self.view_mode == "points" else "points"
+        return self.view_mode
 
     def set_point_cloud(self, points: torch.Tensor, colors: torch.Tensor) -> None:
         self._points, self._colors = self._validate_cloud(points, colors)
@@ -65,7 +73,7 @@ class OrbitPointCloudViewer:
         """Open the viewer. This blocks until the viewer window is closed."""
         try:
             import pyglet
-            from .renderer import PointCloudRenderer
+            from .renderer import GaussianRenderer, PointCloudRenderer
         except ImportError as exc:
             raise RuntimeError(
                 "OrbitPointCloudViewer requires the optional pyglet dependency"
@@ -77,9 +85,13 @@ class OrbitPointCloudViewer:
         self._window = window
 
         renderer = PointCloudRenderer(self.point_size)
+        splat_renderer = GaussianRenderer(self.gaussian_scene) if self.gaussian_scene is not None else None
 
         @window.event
         def on_draw():
+            if self.view_mode == "splats":
+                splat_renderer.draw(window, self.camera_pose)
+                return
             renderer.draw(
                 window,
                 self.camera_pose,
@@ -95,7 +107,15 @@ class OrbitPointCloudViewer:
 
         @window.event
         def on_key_press(symbol, modifiers):
-            if symbol == pyglet.window.key.SPACE and self.on_space is not None:
+            if symbol == pyglet.window.key.TAB:
+                mode = self.toggle_view_mode()
+                window.set_caption(f"FlowSplat {mode}")
+            elif symbol == pyglet.window.key.SPACE and self.view_mode == "points" and self.on_space is not None:
                 self.on_space(self.camera_pose)
+
+        @window.event
+        def on_close():
+            if splat_renderer is not None:
+                splat_renderer.close()
 
         pyglet.app.run()
