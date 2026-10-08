@@ -110,28 +110,35 @@ class SampleLogger:
         for name, data in results.items():
             subset_dir = save_dir / name
             subset_dir.mkdir(parents=True, exist_ok=True)
-            for j, (input, target, pred, intermediates) in enumerate(
-                zip(data["input"], data["target"], data["pred"], data["intermediates"])
-            ):
-                for i in range(input.shape[0]):
-                    val_input = input[i].unsqueeze(0)
-                    val_target = target[i].unsqueeze(0)
+            for j, pred in enumerate(data["pred"]):
+                for i in range(pred.shape[0]):
                     val_pred = pred[i].unsqueeze(0)
-                    val_intermediates = [
-                        inter[i].unsqueeze(0) for inter in intermediates
-                    ]
 
-                    # save_image(val_input, str(subset_dir / f"{i}_{j}_input.png"))
-                    # save_image(val_target, str(subset_dir / f"{i}_{j}_target.png"))
-                    # save_image(val_pred, str(subset_dir / f"{i}_{j}_prediction.png"))
-
-                    combined = torch.cat(
-                        [val_input[:, :3], val_target[:, :3], val_pred[:, :3]], dim=-1
-                    )
+                    if self.mode == "gaussian":
+                        alpha = data["alpha"][j][i : i + 1].clamp(0, 1)
+                        depth = data["depth"][j][i : i + 1].clamp_min(0)
+                        depth = depth / depth.amax().clamp_min(1e-6)
+                        combined = torch.cat(
+                            [
+                                val_pred[:, :3].clamp(0, 1),
+                                depth.repeat(1, 3, 1, 1),
+                                alpha.repeat(1, 3, 1, 1),
+                            ],
+                            dim=-1,
+                        )
+                    else:
+                        val_input = data["input"][j][i : i + 1]
+                        val_target = data["target"][j][i : i + 1]
+                        combined = torch.cat(
+                            [val_input[:, :3], val_target[:, :3], val_pred[:, :3]], dim=-1
+                        )
                     self.writer.add_images(
                         f"images_{name}/combined_{i}_{j}", combined, epoch
                     )
                     if self.mode == "generate":
+                        val_intermediates = [
+                            inter[i : i + 1] for inter in data["intermediates"][j]
+                        ]
                         # RGB-D flow states have a fourth depth channel. Depth is
                         # logged separately below, while this panel shows RGB only.
                         process = torch.cat(
@@ -141,7 +148,7 @@ class SampleLogger:
                             f"generation_{name}/{i}_{j}", process, epoch
                         )
 
-                    if j < len(data.get("depth", [])):
+                    if self.mode != "gaussian" and j < len(data.get("depth", [])):
                         target_depth, predicted_depth = data["depth"][j]
                         depth_panel = self._depth_comparison(
                             target_depth[i : i + 1],

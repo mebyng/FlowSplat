@@ -4,9 +4,11 @@ from datetime import datetime
 
 import torch
 
-from data import ViewDataset
+from data import CameraDataset, ViewDataset
 from logger import SampleLogger
 from models import (
+    GaussianScene,
+    GaussianModel,
     SimpleAutoEncoder,
     AutoEncoder,
     FlowModel,
@@ -14,13 +16,17 @@ from models import (
     AttentionAutoEncoder,
 )
 from trainer import Trainer
-from utils.checkpoints import load_encoding_model, resolve_checkpoint_path
+from utils.checkpoints import (
+    load_encoding_model,
+    load_flow_teacher,
+    resolve_checkpoint_path,
+)
 from utils.randomness import seed_everything
 
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        description="Train a Diffusion Model to generate rotated scenes."
+        description="Train view models or optimize a Gaussian scene with a flow teacher."
     )
     parser.add_argument("--epochs", type=int, default=1000)
     parser.add_argument("--batch-size", type=int, default=32)
@@ -65,7 +71,7 @@ def parse_args(argv=None):
         "--mode",
         type=str,
         default="generate",
-        choices=["rotate", "generate", "encode"],
+        choices=["rotate", "generate", "encode", "gaussian"],
         help="Training mode: 'rotate' for learning rotations, 'generate' for learning to generate views directly (default: 'generate')",
     )
     parser.add_argument(
@@ -108,8 +114,11 @@ def parse_args(argv=None):
         action="store_true",
         help="Append ground-truth depth as a fourth RGB-D channel for rotation/flow training.",
     )
+    parser.add_argument(
+        "--teacher-run", help="Raw RGB flow run used for Gaussian supervision"
+    )
     args = parser.parse_args(argv)
-    if args.use_encoding and args.mode == "encode":
+    if args.use_encoding and args.mode not in ("generate", "rotate"):
         parser.error("--use-encoding is only supported for generate and rotate modes")
     if args.epochs <= 0 or not 0 <= args.warmup_epochs <= args.epochs:
         parser.error("require epochs > 0 and 0 <= warmup-epochs <= epochs")
@@ -131,21 +140,39 @@ def main():
         )
         print(f"Loading autoencoder checkpoint from: {encoding_checkpoint}")
 
-    dataset = ViewDataset(
-        args.dataset_path,
-        split="training",
-        mode=args.mode,
-        use_encoding=bool(args.use_encoding),
-        use_depth=args.use_depth,
-    )
-    val_dataset = ViewDataset(
-        args.dataset_path,
-        split="validation",
-        mode=args.mode,
-        random_matching=False,
-        use_encoding=bool(args.use_encoding),
-        use_depth=args.use_depth,
-    )  # Use deterministic matching for validation
+    if args.mode == "gaussian":
+        source_dataset = ViewDataset(
+            args.dataset_path,
+            split="training",
+            mode="encode",
+            random_matching=False,
+        )
+        source = source_dataset[0]
+        scene_dir, image_index = source_dataset.samples[0]
+        source_pose = torch.from_numpy(
+            source_dataset.scene_info[scene_dir][image_index][1]
+        )
+        intrinsics = torch.from_numpy(source_dataset.scene_intrinsics[scene_dir])
+        dataset = CameraDataset(
+            source, source_pose, intrinsics, num_cameras=128, radius=2.0, seed=args.seed
+        )
+        val_dataset = None
+    else:
+        dataset = ViewDataset(
+            args.dataset_path,
+            split="training",
+            mode=args.mode,
+            use_encoding=bool(args.use_encoding),
+            use_depth=args.use_depth,
+        )
+        val_dataset = ViewDataset(
+            args.dataset_path,
+            split="validation",
+            mode=args.mode,
+            random_matching=False,
+            use_encoding=bool(args.use_encoding),
+            use_depth=args.use_depth,
+        )  # Use deterministic matching for validation
     if args.mode == "generate":
         channels = 4 if (args.use_encoding or args.use_depth) else 3
         resolution = 32 if args.use_encoding else 128
@@ -176,6 +203,16 @@ def main():
         ).cuda()
         autoencoder = None
         resolution = 32
+    elif args.mode == "gaussian":
+        teacher, teacher_checkpoint = load_flow_teacher(args.teacher_run, args.logdir)
+        scene = GaussianScene(num_gaussians=512).cuda()
+        model = GaussianModel(
+            scene,
+            teacher,
+            min_t=0.05,
+            max_t=0.95,
+        )
+        resolution = source.shape[-1]
     else:
         raise ValueError(f"Invalid mode: {args.mode}")
 
@@ -193,7 +230,9 @@ def main():
     print(f"  training seed: {args.seed}; validation seed: {args.validation_seed}")
     print(f"  model parameters: {num_params:,} total, {num_trainable:,} trainable")
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = torch.optim.Adam(
+        (p for p in model.parameters() if p.requires_grad), lr=args.lr
+    )
 
     if args.scheduler == "cosine":
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -217,13 +256,26 @@ def main():
     print(f"TensorBoard logs will be written to: {log_dir}")
 
     metadata = vars(args).copy()
+    if args.mode == "gaussian":
+        metadata.update(
+            {
+                "source_index": 0,
+                "source_split": "training",
+                "num_gaussians": scene.means.shape[0],
+                "camera_radius": dataset.radius,
+                "training_cameras": len(dataset),
+                "min_t": model.min_t,
+                "max_t": model.max_t,
+                "teacher_checkpoint": teacher_checkpoint,
+            }
+        )
     metadata.update(
         {
             "model_name": type(model.model).__name__,
             "num_params": num_params,
             "num_trainable": num_trainable,
             "training_samples": len(dataset),
-            "validation_samples": len(val_dataset),
+            "validation_samples": len(val_dataset) if val_dataset is not None else 0,
             "log_dir": log_dir,
             "encoding_checkpoint": encoding_checkpoint,
         }

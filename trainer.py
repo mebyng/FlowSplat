@@ -56,24 +56,32 @@ class Trainer:
             )
 
     def _prepare_batch(self, batch):
-        """Move a batch to the model device and provide reconstruction targets for AE."""
+        """Return source, target, and cameras on the model device."""
         device = self.model.device()
         if self.mode == "encode":
-            input = batch.to(device)
-            return input, input, None
+            source = batch.to(device)
+            return source, source, None
 
-        input, target, input_pose, target_pose, intrinsics = batch
-        input = input.to(device)
-        target = target.to(device)
-        input_pose = input_pose.to(device)
-        target_pose = target_pose.to(device)
-        intrinsics = intrinsics.to(device)
+        if self.mode == "gaussian":
+            source, target = batch["image"], None
+            source_pose, target_pose, intrinsics = (
+                batch["source"],
+                batch["target"],
+                batch["intrinsics"],
+            )
+        else:
+            source, target, source_pose, target_pose, intrinsics = batch
+
         cameras = {
-            "source": input_pose,
-            "target": target_pose,
-            "intrinsics": intrinsics,
+            "source": source_pose.to(device),
+            "target": target_pose.to(device),
+            "intrinsics": intrinsics.to(device),
         }
-        return input, target, cameras
+        return (
+            source.to(device),
+            target.to(device) if target is not None else None,
+            cameras,
+        )
 
     def train_step(self, batch):
         input, target, cameras = self._prepare_batch(batch)
@@ -87,7 +95,10 @@ class Trainer:
         )
         loss_dict = dict(loss_dict, grad_norm=grad_norm.detach())
         self.optimizer.step()
-        return loss_dict, target.shape[0]
+        count = (
+            cameras["target"].shape[0] if self.mode == "gaussian" else target.shape[0]
+        )
+        return loss_dict, count
 
     def val_step(self, batch):
         input, target, cameras = self._prepare_batch(batch)
@@ -106,7 +117,10 @@ class Trainer:
             else:
                 prediction = self.model.generate(input, noise, cameras)
             loss, loss_dict = self.model.criterion(prediction, target)
-        return loss_dict, target.shape[0]
+        count = (
+            cameras["target"].shape[0] if self.mode == "gaussian" else target.shape[0]
+        )
+        return loss_dict, count
 
     def train_epoch(self, epoch: int = 1):
         max_grad_norm = 0.0
@@ -169,11 +183,18 @@ class Trainer:
                 "pred": [],
                 "intermediates": [],
                 "depth": [],
+                "alpha": [],
             }
 
             input, target, cameras = self._prepare_batch(batch)
             for j in range(n_loops):
                 with torch.no_grad():
+                    if self.mode == "gaussian":
+                        rendered = self.model.render(input, cameras)
+                        results[name]["pred"].append(rendered["rgb"])
+                        results[name]["depth"].append(rendered["depth"])
+                        results[name]["alpha"].append(rendered["alpha"])
+                        continue
                     if self.mode == "generate":
                         # For generation, we need to sample different random inputs
                         noise = (
@@ -219,7 +240,6 @@ class Trainer:
             else self.logger.checkpoint_dir(epoch=epoch, final=final)
             / "model_checkpoint.pth"
         )
-        save_path.parent.mkdir(parents=True, exist_ok=True)
 
         checkpoint = {
             "epoch": epoch,
@@ -227,12 +247,13 @@ class Trainer:
             "warmup_epochs": self.warmup_epochs,
             "base_lrs": self.base_lrs,
             "grad_clip": self.grad_clip,
-            "model_state_dict": self.model.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
         }
+        checkpoint.update(self.model.checkpoint_state())
         if self.scheduler is not None:
             checkpoint["scheduler_state_dict"] = self.scheduler.state_dict()
 
+        save_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(checkpoint, save_path)
         return save_path
 
@@ -241,11 +262,11 @@ class Trainer:
     ):
         checkpoint_path = Path(path)
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        self.model.load_checkpoint(checkpoint, continued=continued)
 
         scheduler_loaded = False
         fresh_lrs = [group["lr"] for group in self.optimizer.param_groups]
         if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-            self.model.model.load_state_dict(checkpoint["model_state_dict"])
             self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             if (
                 continued
@@ -254,8 +275,6 @@ class Trainer:
             ):
                 self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
                 scheduler_loaded = True
-        else:
-            self.model.model.load_state_dict(checkpoint)
 
         if lr is not None and not scheduler_loaded:
             for param_group in self.optimizer.param_groups:
@@ -294,7 +313,7 @@ class Trainer:
             epoch_bar.set_postfix({"loss": f"{avg_loss:.6f}"})
 
             self.logger.log_metrics(train_metrics, epoch, subset="train")
-            if self.validation_dataset is not None:
+            if self.mode != "gaussian" and self.validation_dataset is not None:
                 val_metrics = self.val_epoch()
                 self.logger.log_metrics(val_metrics, epoch, subset="validation")
 

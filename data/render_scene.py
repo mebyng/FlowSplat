@@ -113,11 +113,12 @@ def render_views(
     renderer.delete()
 
 
-def generate_random_cameras(num_views=100, radius=1.0):
+def generate_random_cameras(num_views=100, radius=1.0, rng=None):
+    rng = np.random if rng is None else rng
     cams = []
     for i in range(num_views):
-        z = np.random.uniform(-1.0, 1.0)
-        theta = np.random.uniform(0.0, 2.0 * np.pi)
+        z = rng.uniform(-1.0, 1.0)
+        theta = rng.uniform(0.0, 2.0 * np.pi)
         r_xy = np.sqrt(max(0.0, 1.0 - z * z))
         x = r_xy * np.cos(theta)
         y = r_xy * np.sin(theta)

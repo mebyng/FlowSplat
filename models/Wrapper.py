@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from losses import AutoEncoderLoss, MSELoss
+from losses import AutoEncoderLoss, FlowDistillationLoss, MSELoss
 
 
 class Wrapper(nn.Module):
@@ -20,6 +20,15 @@ class Wrapper(nn.Module):
 
     def load(self, path):
         self.model.load(path)
+
+    def load_checkpoint(self, checkpoint, continued=False):
+        """Restore model-owned state from an already loaded checkpoint."""
+        self.model.load_state_dict(checkpoint.get("model_state_dict", checkpoint))
+        return checkpoint
+
+    def checkpoint_state(self):
+        """Return model-owned state for a training checkpoint."""
+        return {"model_state_dict": self.model.state_dict()}
 
     def generate(
         self,
@@ -64,7 +73,7 @@ class FlowModel(Wrapper):
         self,
         source: torch.Tensor,
         noise: torch.Tensor,
-        cameras: torch.Tensor,
+        cameras: dict[str, torch.Tensor],
         num_steps: int = 10,
     ) -> torch.Tensor:
         """Forward pass through the flow matching model."""
@@ -82,7 +91,7 @@ class FlowModel(Wrapper):
         self,
         source: torch.Tensor,
         noise: torch.Tensor,
-        cameras: torch.Tensor,
+        cameras: dict[str, torch.Tensor],
         num_steps: int = 10,
     ):
         """Log the generation process."""
@@ -103,10 +112,12 @@ class FlowModel(Wrapper):
         return current, intermediates
 
     def train_step(
-        self, source: torch.Tensor, target: torch.Tensor, cameras: torch.Tensor
+        self,
+        source: torch.Tensor,
+        target: torch.Tensor,
+        cameras: dict[str, torch.Tensor],
     ):
         """Perform a single training step."""
-        self.train()
         t = torch.rand(target.size(0), 1, device=target.device)
         noise = torch.randn_like(target)
 
@@ -130,7 +141,7 @@ class RegressionModel(Wrapper):
         self,
         source: torch.Tensor,
         noise: torch.Tensor,
-        cameras: torch.Tensor,
+        cameras: dict[str, torch.Tensor],
         num_steps: int = 10,
     ) -> torch.Tensor:
         """Forward pass through the regression model."""
@@ -138,11 +149,12 @@ class RegressionModel(Wrapper):
         return self.model(None, source, cameras, None)
 
     def train_step(
-        self, source: torch.Tensor, target: torch.Tensor, cameras: torch.Tensor
+        self,
+        source: torch.Tensor,
+        target: torch.Tensor,
+        cameras: dict[str, torch.Tensor],
     ):
         """Perform a single training step."""
-        self.train()
-
         pred = self.model(torch.zeros_like(source), source, cameras, None)
         loss, loss_dict = self.criterion(pred, target)
         return loss, loss_dict
@@ -159,7 +171,7 @@ class AutoEncoder(Wrapper):
         self,
         source: torch.Tensor,
         noise: torch.Tensor,
-        cameras: torch.Tensor,
+        cameras: dict[str, torch.Tensor],
         num_steps: int = 10,
     ) -> torch.Tensor:
         """Forward pass through the autoencoder model."""
@@ -167,10 +179,64 @@ class AutoEncoder(Wrapper):
         return self.model(source)[0]
 
     def train_step(
-        self, source: torch.Tensor, target: torch.Tensor, cameras: torch.Tensor
+        self,
+        source: torch.Tensor,
+        target: torch.Tensor,
+        cameras: dict[str, torch.Tensor],
     ):
         """Perform a single training step."""
-        self.train()
         pred = self.model(source)
         loss, loss_dict = self.criterion(pred, target)
         return loss, loss_dict
+
+
+class GaussianModel(Wrapper):
+    """Optimize one GaussianScene with a frozen pixel-space FlowModel teacher.
+
+    Source image/pose and target cameras are supplied per step. No target
+    images or teacher-generated views are used. Optimize self.model.parameters().
+    """
+
+    def __init__(self, model, teacher, min_t=0.05, max_t=0.95):
+        super().__init__(model)
+        self.teacher = teacher.to(model.device()).eval().requires_grad_(False).eval()
+        self.min_t, self.max_t = min_t, max_t
+        self.criterion = FlowDistillationLoss()
+
+    def train(self, mode=True):
+        self.model.train(mode)
+        return self
+
+    def eval(self, mode=True):
+        self.model.eval()
+        return self
+
+    def render(self, source, cameras):
+        return self.model.render(
+            cameras["target"],
+            cameras["intrinsics"],
+            height=source.shape[-2],
+            width=source.shape[-1],
+        )
+
+    def generate(self, source, noise, cameras, num_steps=10):
+        return self.render(source, cameras)["rgb"]
+
+    def train_step(self, source, target, cameras):
+        """Compute a surrogate loss; explicit noise/time allow repeatable diagnostics."""
+        image = self.render(source, cameras)["rgb"]
+        batch_size = image.shape[0]
+        noise = torch.randn_like(image)
+        timestep = torch.rand(batch_size, 1, device=image.device, dtype=image.dtype)
+        timestep = self.min_t + (self.max_t - self.min_t) * timestep
+
+        with torch.no_grad():
+            t = timestep[:, :, None, None]
+            x_t = (1 - t) * noise + t * image.detach()
+            velocity = self.teacher.model(
+                x_t,
+                source,
+                cameras,
+                timestep,
+            )
+        return self.criterion(image, noise, timestep, velocity)

@@ -10,7 +10,7 @@ from torch.utils.data import Dataset
 from torch.utils.data._utils.collate import default_collate
 from torchvision import transforms
 
-from utils.camera_utils import default_align_cameras
+from .render_scene import generate_random_cameras, look_at
 
 
 default_transform = transforms.Compose(
@@ -19,6 +19,39 @@ default_transform = transforms.Compose(
         transforms.Normalize(mean=[0.0, 0.0, 0.0], std=[1.0, 1.0, 1.0]),
     ]
 )
+
+
+class CameraDataset(Dataset):
+    """Sample fresh OpenGL cameras on a sphere for each requested item.
+
+    num_cameras specifies the number of samples per epoch, not a stored bank.
+    """
+
+    def __init__(self, source, source_pose, intrinsics, num_cameras=128, radius=2.0, seed=42):
+        self.source = source.detach().cpu().clone()
+        self.source_pose = source_pose.detach().cpu().clone()
+        self.intrinsics = intrinsics.detach().cpu().clone()
+        self.num_cameras = num_cameras
+        self.radius = radius
+        self.rng = np.random.default_rng(seed)
+
+    def __len__(self):
+        return self.num_cameras
+
+    def __getitem__(self, index):
+        _, position, up = generate_random_cameras(
+            num_views=1, radius=self.radius, rng=self.rng
+        )[0]
+        pose = look_at(position, np.zeros(3, dtype=np.float32), up=up)
+        return {
+            "image": self.source,
+            "source": self.source_pose,
+            "target": torch.from_numpy(pose),
+            "intrinsics": self.intrinsics,
+        }
+
+    def getitems(self, indices):
+        return default_collate([self[int(index)] for index in indices])
 
 
 class ViewDataset(Dataset):
@@ -80,7 +113,9 @@ class ViewDataset(Dataset):
                     if img_path.exists():
                         if self.use_depth:
                             depth_filename = row.get("depth_filename")
-                            depth_path = scene_dir / depth_filename if depth_filename else None
+                            depth_path = (
+                                scene_dir / depth_filename if depth_filename else None
+                            )
                             if depth_path is None or not depth_path.exists():
                                 raise FileNotFoundError(
                                     f"depth_filename is missing or invalid for {img_path}; "

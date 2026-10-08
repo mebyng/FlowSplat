@@ -1,1 +1,3 @@
-from .dataset import ViewDataset
+from .dataset import CameraDataset, ViewDataset
+
+__all__ = ["CameraDataset", "ViewDataset"]
