@@ -65,9 +65,9 @@ class Wrapper(nn.Module):
 class FlowModel(Wrapper):
     """Simple Flow Matching model."""
 
-    def __init__(self, model: nn.Module):
+    def __init__(self, model: nn.Module, use_depth=False):
         super().__init__(model)
-        self.criterion = MSELoss()
+        self.criterion = MSELoss(use_depth=use_depth)
 
     def generate(
         self,
@@ -133,9 +133,9 @@ class FlowModel(Wrapper):
 class RegressionModel(Wrapper):
     """Simple Regression model."""
 
-    def __init__(self, model: nn.Module):
+    def __init__(self, model: nn.Module, use_depth=False):
         super().__init__(model)
-        self.criterion = MSELoss()
+        self.criterion = MSELoss(use_depth=use_depth)
 
     def generate(
         self,
@@ -197,13 +197,13 @@ class GaussianModel(Wrapper):
     images or teacher-generated views are used. Optimize self.model.parameters().
     """
 
-    def __init__(self, model, teacher, min_t=0.05, max_t=0.95, depth_weight=0.1):
+    def __init__(
+        self, model, teacher, min_t=0.05, max_t=0.95, depth_weight=0.1, use_depth=False
+    ):
         super().__init__(model)
         self.teacher = teacher.to(model.device()).eval().requires_grad_(False).eval()
         self.min_t, self.max_t = min_t, max_t
-        if teacher.model.in_channels not in (3, 4):
-            raise ValueError("Gaussian supervision requires an RGB or RGB-D teacher")
-        self.use_depth = teacher.model.in_channels == 4
+        self.use_depth = use_depth
         self.criterion = FlowDistillationLoss(depth_weight=depth_weight)
 
     def train(self, mode=True):
@@ -229,7 +229,9 @@ class GaussianModel(Wrapper):
         """Distill RGB and, for RGB-D teachers, expected depth without alpha weighting."""
         expected_channels = 4 if self.use_depth else 3
         if source.shape[1] != expected_channels:
-            raise ValueError(f"teacher requires {expected_channels}-channel source images")
+            raise ValueError(
+                f"teacher requires {expected_channels}-channel source images"
+            )
         rendered = self.render(source, cameras)
         image = rendered["rgb"]
         if self.use_depth:

@@ -75,13 +75,13 @@ def load_flow_teacher(run_name, logdir="runs", device="cuda"):
     metadata = json.loads((run / "metadata.json").read_text())
     use_depth = metadata.get("use_depth", False)
     if metadata.get("mode") != "generate" or metadata.get("use_encoding"):
-        raise ValueError("Gaussian supervision requires a raw RGB or RGB-D generate run")
+        raise ValueError(
+            "Gaussian supervision requires a raw RGB or RGB-D generate run"
+        )
     if metadata.get("model_name") != "AttentionAutoEncoder":
         raise ValueError("Unsupported teacher architecture")
     channels = 4 if use_depth else 3
-    network = AttentionAutoEncoder(
-        mode="flow", in_channels=channels, out_channels=channels, emb_channels=128
-    )
+    network = AttentionAutoEncoder(mode="flow", channels=channels, emb_channels=128)
     checkpoint = torch.load(path, map_location="cpu", weights_only=True)
     network.load_state_dict(checkpoint.get("model_state_dict", checkpoint))
     return FlowModel(network).to(device).eval().requires_grad_(False), path

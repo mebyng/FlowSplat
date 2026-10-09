@@ -21,18 +21,16 @@ class AttentionAutoEncoder(nn.Module):
     def __init__(
         self,
         mode="deterministic",
-        in_channels=3,
-        out_channels=3,
+        channels=3,
         base_channels=32,
         emb_channels=64,
         num_attn_heads=4,
     ):
         super().__init__()
         self.mode = mode
-        self.in_channels = in_channels
+        self.channels = channels
         self.base_channels = base_channels
         self.emb_channels = emb_channels
-        self.out_channels = out_channels
         self.num_attn_heads = num_attn_heads
 
         self.construct_time_embedding()
@@ -81,7 +79,7 @@ class AttentionAutoEncoder(nn.Module):
 
     def construct_image_encoder(self):
         self.in_conv = ConvBlock(
-            self.in_channels, self.base_channels, emb_channels=self.emb_channels
+            self.channels, self.base_channels, emb_channels=self.emb_channels
         )
 
         self.enc2 = ResBlock(
@@ -170,7 +168,7 @@ class AttentionAutoEncoder(nn.Module):
             self.base_channels, self.base_channels, emb_channels=self.emb_channels
         )
 
-        self.out_conv = nn.Conv2d(self.base_channels, self.out_channels, kernel_size=1)
+        self.out_conv = nn.Conv2d(self.base_channels, self.channels, kernel_size=1)
 
     def apply_image_decoder(self, latent, skips=None, condition=None):
         if skips is not None:
@@ -301,12 +299,12 @@ class AttentionAutoEncoder(nn.Module):
         """Forward pass.
 
         Args:
-            input: input image (noisy target) of shape (B, in_channels, H, W)
-            source: source image of shape (B, in_channels, H, W)
+            input: input image (noisy target) of shape (B, 3/4, H, W)
+            source: source image of shape (B, 3/4, H, W)
             cameras: camera parameters
             timestep: timestep/noise condition of shape (B, 1)
         Returns:
-            output: tensor of shape (B, out_channels, H, W)
+            output: tensor of shape (B, 3/4, H, W)
         """
         time_emb = self.apply_time_embedding(timestep)
         rotation = default_align_cameras(cameras["source"], cameras["target"])
@@ -322,6 +320,8 @@ class AttentionAutoEncoder(nn.Module):
             latent = source.clone()
         elif self.mode == "flow":
             latent, skips = self.apply_image_encoder(input)
+        else:
+            raise ValueError(f"Unknown mode: {self.mode}")
 
         # Apply core processing with cross-attention
         core_output = self.apply_core(latent, source, time_emb, rotation_emb)

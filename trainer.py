@@ -215,19 +215,26 @@ class Trainer:
                             raise ValueError(
                                 "encoding is used but no autoencoder provided"
                             )
-                        input = self.autoencoder.decode(input)
-                        target = self.autoencoder.decode(target)
-                        pred = self.autoencoder.decode(pred)
-                        intermediates = [
+                        decoded_input = self.autoencoder.decode(input)
+                        decoded_target = self.autoencoder.decode(target)
+                        decoded_pred = self.autoencoder.decode(pred)
+                        decoded_intermediates = [
                             self.autoencoder.decode(inter) for inter in intermediates
                         ]
+                    else:
+                        decoded_input = input
+                        decoded_target = target
+                        decoded_pred = pred
+                        decoded_intermediates = intermediates
 
-                    results[name]["input"].append(input[:, :3])
-                    results[name]["target"].append(target)
-                    results[name]["pred"].append(pred)
-                    results[name]["intermediates"].append(intermediates)
-                    if dataset.use_depth and not dataset.use_encoding:
-                        results[name]["depth"].append((target[:, 3:4], pred[:, 3:4]))
+                    results[name]["input"].append(decoded_input[:, :3])
+                    results[name]["target"].append(decoded_target)
+                    results[name]["pred"].append(decoded_pred)
+                    results[name]["intermediates"].append(decoded_intermediates)
+                    if dataset.use_depth:
+                        results[name]["depth"].append(
+                            (decoded_target[:, 3:4], decoded_pred[:, 3:4])
+                        )
 
         self.logger.save(results, epoch, final=final)
 

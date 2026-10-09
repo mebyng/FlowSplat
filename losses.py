@@ -6,19 +6,24 @@ import lpips
 class MSELoss(nn.Module):
     """Simple MSE loss that returns a loss dictionary for logging."""
 
-    def __init__(self, color_weight=1.0, depth_weight=0.1):
+    def __init__(self, color_weight=1.0, depth_weight=0.1, use_depth=False):
         super().__init__()
         self.mse = nn.MSELoss()
         self.color_weight = color_weight
         self.depth_weight = depth_weight
+        self.use_depth = use_depth
 
     def forward(self, prediction, target):
-        pred_color = prediction[:, :3]
-        target_color = target[:, :3]
+        if self.use_depth:
+            pred_color = prediction[:, :3]
+            target_color = target[:, :3]
+        else:
+            pred_color = prediction
+            target_color = target
         color_loss = self.mse(pred_color, target_color).mean()
         loss = color_loss * self.color_weight
         loss_dict = {"mse": color_loss}
-        if prediction.shape[1] == 4:
+        if self.use_depth:
             pred_depth = prediction[:, 3:4]
             target_depth = target[:, 3:4]
             depth_loss = self.mse(pred_depth, target_depth).mean()

@@ -140,6 +140,13 @@ def main():
         autoencoder, encoding_checkpoint = load_encoding_model(
             encoding_run_name, args.logdir
         )
+        ae_use_depth = bool(autoencoder.use_depth.item())
+        if args.use_depth != ae_use_depth:
+            action = "add --use-depth" if ae_use_depth else "remove --use-depth"
+            raise ValueError(
+                f"Autoencoder '{encoding_run_name}' has use_depth={ae_use_depth}, "
+                f"but --use-depth is {args.use_depth}; {action} to match the autoencoder."
+            )
         print(f"Loading autoencoder checkpoint from: {encoding_checkpoint}")
 
     if args.mode == "gaussian":
@@ -182,10 +189,10 @@ def main():
         model = FlowModel(
             AttentionAutoEncoder(
                 mode="flow",
-                in_channels=channels,
-                out_channels=channels,
+                channels=channels,
                 emb_channels=128,
             ),
+            use_depth=args.use_depth,
         ).cuda()
 
     elif args.mode == "rotate":
@@ -194,10 +201,10 @@ def main():
         model = RegressionModel(
             AttentionAutoEncoder(
                 mode="deterministic",
-                in_channels=channels,
-                out_channels=channels,
+                channels=channels,
                 emb_channels=128,
             ),
+            use_depth=args.use_depth,
         ).cuda()
 
     elif args.mode == "encode":
@@ -209,9 +216,9 @@ def main():
     elif args.mode == "gaussian":
         teacher, teacher_checkpoint = load_flow_teacher(args.teacher_run, args.logdir)
         expected_channels = 4 if args.use_depth else 3
-        if teacher.model.in_channels != expected_channels:
+        if teacher.model.channels != expected_channels:
             raise ValueError(
-                f"Teacher model has {teacher.model.in_channels} input channels, but expected {expected_channels} (use --use-depth to enable depth channel)"
+                f"Teacher model has {teacher.model.channels} input channels, but expected {expected_channels} (use --use-depth to enable depth channel)"
             )
         scene = GaussianScene(num_gaussians=512).cuda()
         model = GaussianModel(
@@ -219,6 +226,7 @@ def main():
             teacher,
             min_t=0.05,
             max_t=0.95,
+            use_depth=args.use_depth,
         )
         resolution = source.shape[-1]
     else:

@@ -106,7 +106,6 @@ def parse_args(argv=None):
     )
     parser.add_argument("--device", default="auto", help="auto, cpu, cuda, or cuda:N")
     parser.add_argument("--output-dirname", default="encodings")
-    parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args(argv)
     directory = Path(args.output_dirname)
     if directory.is_absolute() or ".." in directory.parts or not directory.parts:
@@ -143,7 +142,7 @@ def main(argv=None):
             autoencoder,
             device=device,
             output_dirname=args.output_dirname,
-            overwrite=args.overwrite,
+            overwrite=True,
             run_name=args.run_name,
         )
 

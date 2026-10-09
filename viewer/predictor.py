@@ -37,7 +37,7 @@ class ViewPredictor:
         self.steps = steps
         network = AttentionAutoEncoder(
             mode="flow" if self.mode == "generate" else "deterministic",
-            in_channels=4, out_channels=4, emb_channels=128,
+            channels=4, emb_channels=128,
         )
         checkpoint = torch.load(self.checkpoint, map_location="cpu", weights_only=True)
         network.load_state_dict(checkpoint.get("model_state_dict", checkpoint))
