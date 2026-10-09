@@ -157,10 +157,12 @@ def render_views_random(
         cam_node = scene.add(camera, pose=pose)
         color, depth = renderer.render(scene)
         fname = f"{output_dir}/render_rand_{idx:04d}.png"
-        depth_fname = f"depth_rand_{idx:04d}.npy"
+        depth_fname = f"depth_rand_{idx:04d}.npz"
         Image.fromarray(color).save(fname)
-        # Preserve the renderer's float depth instead of quantizing it to an image.
-        np.save(os.path.join(output_dir, depth_fname), depth.astype(np.float32))
+        # Compress half-precision depth, preserving scene units and zero background.
+        np.savez_compressed(
+            os.path.join(output_dir, depth_fname), depth=depth.astype(np.float16)
+        )
         scene.remove_node(cam_node)
 
         mat_flat = pose.reshape(-1).tolist()

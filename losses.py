@@ -17,13 +17,14 @@ class MSELoss(nn.Module):
         target_color = target[:, :3]
         color_loss = self.mse(pred_color, target_color).mean()
         loss = color_loss * self.color_weight
+        loss_dict = {"mse": color_loss}
         if prediction.shape[1] == 4:
             pred_depth = prediction[:, 3:4]
             target_depth = target[:, 3:4]
             depth_loss = self.mse(pred_depth, target_depth).mean()
             loss = loss + depth_loss * self.depth_weight
-        loss = self.mse(prediction, target).mean()
-        loss_dict = {"mse": color_loss, "depth": depth_loss, "total": loss}
+            loss_dict["depth"] = depth_loss
+        loss_dict["total"] = loss
         return loss, loss_dict
 
 
@@ -96,16 +97,29 @@ class FlowDistillationLoss(nn.Module):
     Jacobian. The scalar is a gradient surrogate, not reconstruction quality.
     """
 
+    def __init__(self, depth_weight=0.1):
+        super().__init__()
+        if depth_weight < 0:
+            raise ValueError("depth_weight must be nonnegative")
+        self.depth_weight = depth_weight
+
     def forward(self, image, noise, timestep, velocity):
         with torch.no_grad():
             gradient = timestep[:, :, None, None] * (image - noise - velocity)
             if not torch.isfinite(gradient).all():
                 raise ValueError("nonfinite distillation gradient")
             target = image - gradient
-        loss = 0.5 * (image - target).square().mean()
-        return loss, {
-            "total": loss.detach(),
-            "distillation": loss.detach(),
+        residual = image - target
+        rgb_loss = 0.5 * residual[:, :3].square().mean()
+        loss = rgb_loss
+        metrics = {
+            "distillation_rgb": rgb_loss.detach(),
             "distillation_gradient_rms": gradient.square().mean().sqrt(),
             "timestep": timestep.detach().mean(),
         }
+        if image.shape[1] == 4:
+            depth_loss = 0.5 * residual[:, 3:4].square().mean()
+            loss = loss + self.depth_weight * depth_loss
+            metrics["distillation_depth"] = depth_loss.detach()
+        metrics.update(total=loss.detach(), distillation=loss.detach())
+        return loss, metrics

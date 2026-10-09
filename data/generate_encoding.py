@@ -1,6 +1,7 @@
 import argparse
 from pathlib import Path
 import csv
+import json
 import sys
 import torch
 
@@ -19,6 +20,8 @@ def generate_encoding(
     device=None,
     output_dirname="encodings",
     overwrite=False,
+    *,
+    run_name,
 ):
     """Run every dataset image through the autoencoder encoder and save latent encodings.
 
@@ -29,6 +32,7 @@ def generate_encoding(
         device: Device to move tensors and model to. If None, infer from the model.
         output_dirname: Directory name under each scene containing encodings.
         overwrite: If True, overwrite existing encoding files.
+        run_name: Autoencoder run used to generate the saved encodings.
     """
     if device is None:
         try:
@@ -82,6 +86,9 @@ def generate_encoding(
             writer.writeheader()
             writer.writerows(rows)
 
+    metadata_path = dataset.root.parent / "encoding_metadata.json"
+    metadata_path.write_text(json.dumps({"run_name": run_name}, indent=2) + "\n")
+
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
@@ -116,7 +123,7 @@ def main(argv=None):
     )
     autoencoder, checkpoint = load_encoding_model(args.run_name, args.logdir, device)
     print(f"Loaded autoencoder: {checkpoint}")
-    channels = autoencoder.initial_conv[0].in_channels
+    channels = 4 if autoencoder.use_depth.item() else 3
     if channels not in (3, 4):
         raise ValueError(
             f"Expected an RGB or RGB-D autoencoder, got {channels} input channels"
@@ -137,6 +144,7 @@ def main(argv=None):
             device=device,
             output_dirname=args.output_dirname,
             overwrite=args.overwrite,
+            run_name=args.run_name,
         )
 
 

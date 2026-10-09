@@ -56,8 +56,8 @@ def load_encoding_model(run_name, logdir="runs", device="cuda"):
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     state_dict = checkpoint.get("model_state_dict", checkpoint)
     autoencoder = SimpleAutoEncoder(
-        in_channels=state_dict["initial_conv.0.weight"].shape[1],
-        latent_dim=state_dict["down4.0.weight"].shape[0],
+        latent_dim=int(state_dict["latent_dim"].item()),
+        use_depth=bool(state_dict["use_depth"].item()),
     )
     autoencoder.load_state_dict(state_dict)
     autoencoder = autoencoder.to(device).eval().requires_grad_(False)
@@ -75,7 +75,7 @@ def load_flow_teacher(run_name, logdir="runs", device="cuda"):
     metadata = json.loads((run / "metadata.json").read_text())
     use_depth = metadata.get("use_depth", False)
     if metadata.get("mode") != "generate" or metadata.get("use_encoding"):
-        raise ValueError("Gaussian supervision requires a raw RGB generate run")
+        raise ValueError("Gaussian supervision requires a raw RGB or RGB-D generate run")
     if metadata.get("model_name") != "AttentionAutoEncoder":
         raise ValueError("Unsupported teacher architecture")
     channels = 4 if use_depth else 3

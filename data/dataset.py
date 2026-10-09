@@ -164,7 +164,11 @@ class ViewDataset(Dataset):
         return image
 
     def _load_depth(self, path):
-        depth = np.load(path).astype(np.float32, copy=False)
+        if Path(path).suffix == ".npz":
+            with np.load(path, allow_pickle=False) as archive:
+                depth = archive["depth"].astype(np.float32)
+        else:
+            depth = np.load(path, allow_pickle=False).astype(np.float32, copy=False)
         if depth.ndim != 2:
             raise ValueError(f"expected a 2D depth map in {path}, got {depth.shape}")
         return torch.from_numpy(depth)

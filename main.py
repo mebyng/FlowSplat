@@ -1,5 +1,7 @@
 import argparse
 import os
+import json
+from pathlib import Path
 from datetime import datetime
 
 import torch
@@ -104,10 +106,8 @@ def parse_args(argv=None):
     )
     parser.add_argument(
         "--use-encoding",
-        type=str,
-        metavar="RUN_NAME",
-        default=None,
-        help="Use precomputed latents and load the AE run from <logdir>/encode/RUN_NAME (final checkpoint preferred).",
+        action="store_true",
+        help="Use precomputed latents and load the AE run recorded in the dataset's encoding_metadata.json.",
     )
     parser.add_argument(
         "--use-depth",
@@ -115,7 +115,7 @@ def parse_args(argv=None):
         help="Append ground-truth depth as a fourth RGB-D channel for rotation/flow training.",
     )
     parser.add_argument(
-        "--teacher-run", help="Raw RGB flow run used for Gaussian supervision"
+        "--teacher-run", help="Raw RGB or RGB-D flow run used for Gaussian supervision"
     )
     args = parser.parse_args(argv)
     if args.use_encoding and args.mode not in ("generate", "rotate"):
@@ -135,8 +135,10 @@ def main():
     autoencoder = None
     encoding_checkpoint = None
     if args.use_encoding:
+        metadata_path = Path(args.dataset_path) / "encoding_metadata.json"
+        encoding_run_name = json.loads(metadata_path.read_text())["run_name"]
         autoencoder, encoding_checkpoint = load_encoding_model(
-            args.use_encoding, args.logdir
+            encoding_run_name, args.logdir
         )
         print(f"Loading autoencoder checkpoint from: {encoding_checkpoint}")
 
@@ -146,6 +148,7 @@ def main():
             split="training",
             mode="encode",
             random_matching=False,
+            use_depth=args.use_depth,
         )
         source = source_dataset[0]
         scene_dir, image_index = source_dataset.samples[0]
@@ -199,12 +202,17 @@ def main():
 
     elif args.mode == "encode":
         model = AutoEncoder(
-            SimpleAutoEncoder(in_channels=4 if args.use_depth else 3, latent_dim=4)
+            SimpleAutoEncoder(use_depth=args.use_depth, latent_dim=4)
         ).cuda()
         autoencoder = None
         resolution = 32
     elif args.mode == "gaussian":
         teacher, teacher_checkpoint = load_flow_teacher(args.teacher_run, args.logdir)
+        expected_channels = 4 if args.use_depth else 3
+        if teacher.model.in_channels != expected_channels:
+            raise ValueError(
+                f"Teacher model has {teacher.model.in_channels} input channels, but expected {expected_channels} (use --use-depth to enable depth channel)"
+            )
         scene = GaussianScene(num_gaussians=512).cuda()
         model = GaussianModel(
             scene,

@@ -44,6 +44,10 @@ class SampleLogger:
             name: dataset.getitems(self._select_sample_indices(dataset, name))
             for name, dataset in self.datasets
         }
+        if self.mode == "gaussian":
+            self.writer.add_image(
+                "images_train/input", self.samples["train"]["image"][0, :3].clamp(0, 1), 0
+            )
         self.random_inputs = (
             self._create_random_inputs() if self.mode == "generate" else []
         )

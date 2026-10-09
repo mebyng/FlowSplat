@@ -56,7 +56,7 @@ class ResBlock(nn.Module):
         self.out_channels = out_channels
 
         self.in_layers = nn.Sequential(
-            nn.GroupNorm(8, channels),
+            nn.GroupNorm(math.gcd(8, channels), channels),
             nn.SiLU(),
             nn.Conv2d(channels, self.out_channels, 3, padding=1),
         )
@@ -67,7 +67,7 @@ class ResBlock(nn.Module):
                 nn.Linear(emb_channels, 2 * self.out_channels),
             )
 
-        self.out_norm = nn.GroupNorm(8, self.out_channels)
+        self.out_norm = nn.GroupNorm(math.gcd(8, self.out_channels), self.out_channels)
         self.out_layers = nn.Sequential(
             nn.SiLU(),
             nn.Dropout(p=dropout),

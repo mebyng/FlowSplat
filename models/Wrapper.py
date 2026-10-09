@@ -197,11 +197,14 @@ class GaussianModel(Wrapper):
     images or teacher-generated views are used. Optimize self.model.parameters().
     """
 
-    def __init__(self, model, teacher, min_t=0.05, max_t=0.95):
+    def __init__(self, model, teacher, min_t=0.05, max_t=0.95, depth_weight=0.1):
         super().__init__(model)
         self.teacher = teacher.to(model.device()).eval().requires_grad_(False).eval()
         self.min_t, self.max_t = min_t, max_t
-        self.criterion = FlowDistillationLoss()
+        if teacher.model.in_channels not in (3, 4):
+            raise ValueError("Gaussian supervision requires an RGB or RGB-D teacher")
+        self.use_depth = teacher.model.in_channels == 4
+        self.criterion = FlowDistillationLoss(depth_weight=depth_weight)
 
     def train(self, mode=True):
         self.model.train(mode)
@@ -223,13 +226,18 @@ class GaussianModel(Wrapper):
         return self.render(source, cameras)["rgb"]
 
     def train_step(self, source, target, cameras):
-        """Compute a surrogate loss; explicit noise/time allow repeatable diagnostics."""
-        image = self.render(source, cameras)["rgb"]
+        """Distill RGB and, for RGB-D teachers, expected depth without alpha weighting."""
+        expected_channels = 4 if self.use_depth else 3
+        if source.shape[1] != expected_channels:
+            raise ValueError(f"teacher requires {expected_channels}-channel source images")
+        rendered = self.render(source, cameras)
+        image = rendered["rgb"]
+        if self.use_depth:
+            image = torch.cat([image, rendered["depth"]], dim=1)
         batch_size = image.shape[0]
         noise = torch.randn_like(image)
         timestep = torch.rand(batch_size, 1, device=image.device, dtype=image.dtype)
         timestep = self.min_t + (self.max_t - self.min_t) * timestep
-        # TODO deal correctly with the fact that the teacher expects a 4-channel input if depth is used
         with torch.no_grad():
             t = timestep[:, :, None, None]
             x_t = (1 - t) * noise + t * image.detach()

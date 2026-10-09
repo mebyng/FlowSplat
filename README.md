@@ -82,7 +82,7 @@ Run `python data/generate_dataset.py --help` for all options.
 datasets/<name>/
   training/scene_000/
     render_rand_0000.png
-    depth_rand_0000.npy
+    depth_rand_0000.npz
     camera_matrices.csv
     intrinsics.csv
   validation/scene_000/
@@ -130,18 +130,19 @@ Important CLI defaults (the example above overrides some of them):
 
 Use `python main.py --help` for the full argument list.
 
-For latent training, `--use-encoding AE_RUN_NAME` loads the autoencoder from
+For latent training, `--use-encoding` reads the AE run name from the dataset root's
+`encoding_metadata.json` and loads the autoencoder from
 `<logdir>/encode/AE_RUN_NAME/`, preferring `final/model_checkpoint.pth`, then the
 highest saved epoch, then a checkpoint in the run root. For example:
 
 ```bash
 python main.py --mode generate --dataset-path datasets/demo \
-  --use-encoding my_autoencoder --run-name latent_flow
+  --use-encoding --run-name latent_flow
 ```
 
 This still reads precomputed `.pt` latents referenced by `encoded_filename` in
 the dataset CSV; generate those with the same autoencoder weights. The option is
-available for `generate` and `rotate`, and must include a run name. Raw-image runs
+available for `generate` and `rotate`. Raw-image runs
 do not load an autoencoder. The selected checkpoint path is saved in run metadata.
 
 Precompute encodings from the same AE run before latent training:
@@ -155,6 +156,8 @@ for one split, `--device cpu` to force CPU, and `--overwrite` to replace existin
 latents. `--logdir` selects the runs root and `--output-dirname` selects the encoding
 subdirectory within each scene. RGB-D input is inferred from the loaded weights.
 Final checkpoints are preferred over the highest saved epoch.
+Encoding generation writes one shared `encoding_metadata.json` containing
+`run_name` at the dataset root; all encodings are assumed to use that AE run.
 
 ### Reproducible training and checkpoints
 
@@ -293,7 +296,9 @@ The teacher must be an RGB `FlowModel` using the same pixel range, camera
 conventions, intrinsics and resolution as the source/render. It remains frozen
 and in evaluation mode. `CameraDataset` owns the fixed source image, source pose,
 and intrinsics, and includes them in each batch.
-No target images, generated views, depth supervision, or autoencoder are used.
+No target images, generated views, or autoencoder are used. RGB-D teachers also
+supervise expected z-depth through a separate distillation loss, weighted by 0.1.
+Depth is not multiplied or weighted by alpha. RGB teachers use only RGB loss.
 
 With `x_t = (1-t)*noise + t*render`, the teacher's implied noise is
 `x_t - t*v_teacher`. The injected gradient is its residual against sampled noise:
@@ -306,7 +311,9 @@ Gaussian weights and distillation settings; source conditioning comes from the d
 
 ## Optimize a Gaussian scene using a flow teacher
 
-First train a raw RGB `generate` run (no `--use-depth` or `--use-encoding`).
+First train a raw RGB or RGB-D `generate` run (no `--use-encoding`). Use
+`--use-depth` for the teacher run to enable depth supervision during splatting;
+the Gaussian run detects this from the teacher and loads source depth automatically.
 Install the optional gsplat backend above, then:
 
 ```bash
@@ -317,7 +324,7 @@ python main.py --mode gaussian --teacher-run rgb_flow \
 ```
 
 `--teacher-run` resolves under `<logdir>/generate/`, preferring final then latest
-epoch. Teacher metadata must identify a raw RGB AttentionAutoEncoder flow run.
+epoch. Teacher metadata must identify a raw RGB or RGB-D AttentionAutoEncoder flow run.
 The dataset supplies only the chosen source image, pose, and intrinsics.
 Gaussian settings are fixed in `main.py`: the first training image, 512 Gaussians,
 camera radius 2.0, 128 training and 16 validation cameras per epoch, and time bounds
