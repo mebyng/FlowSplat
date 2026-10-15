@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 
 from models import AttentionAutoEncoder, FlowModel, RegressionModel
-from utils.checkpoints import resolve_checkpoint_path
+from utils.checkpoints import load_encoding_model, resolve_checkpoint_path
 
 
 def resolve_run(run_name: str, logdir: str = "runs") -> tuple[Path, Path]:
@@ -31,13 +31,26 @@ class ViewPredictor:
         self.mode = metadata.get("mode")
         if self.mode not in {"rotate", "generate"}:
             raise ValueError("Viewer requires a rotate or generate run")
-        if not metadata.get("use_depth") or metadata.get("use_encoding"):
-            raise ValueError("Viewer requires a raw RGB-D run trained with --use-depth and without --use-encoding")
+        use_encoding = metadata.get("use_encoding", False)
+        if not metadata.get("use_depth") and not use_encoding:
+            raise ValueError("Viewer requires a run trained with --use-depth or --use-encoding")
         self.device = torch.device(("cuda" if torch.cuda.is_available() else "cpu") if device == "auto" else device)
         self.steps = steps
+        self.autoencoder = None
+        self.encoding_checkpoint = None
+        self.channels = 4
+        if use_encoding:
+            encoding_checkpoint = metadata.get("encoding_checkpoint")
+            if not encoding_checkpoint:
+                raise ValueError("Latent run metadata must record its encoding_checkpoint")
+            self.autoencoder, self.encoding_checkpoint = load_encoding_model(
+                encoding_checkpoint, logdir, self.device
+            )
+            self.channels = self.autoencoder.channels
         network = AttentionAutoEncoder(
             mode="flow" if self.mode == "generate" else "deterministic",
-            channels=4, emb_channels=128,
+            channels=int(self.autoencoder.latent_dim.item()) if use_encoding else 4,
+            emb_channels=128,
         )
         checkpoint = torch.load(self.checkpoint, map_location="cpu", weights_only=True)
         network.load_state_dict(checkpoint.get("model_state_dict", checkpoint))
@@ -46,13 +59,20 @@ class ViewPredictor:
     @torch.inference_mode()
     def predict(self, source, source_pose, target_pose, intrinsics):
         source = source.detach().clone().unsqueeze(0).to(self.device)
+        source = source[:, :self.channels]
+        image_shape = source.shape[1:]
+        if self.autoencoder is not None:
+            source = self.autoencoder.encode(source)
         cameras = {
             "source": source_pose.unsqueeze(0).to(self.device),
             "target": target_pose.unsqueeze(0).to(self.device),
             "intrinsics": intrinsics.unsqueeze(0).to(self.device),
         }
         noise = torch.randn_like(source) if self.mode == "generate" else None
-        result = self.model.generate(source, noise, cameras, num_steps=self.steps)[0]
-        if result.shape != source.shape[1:]:
-            raise ValueError(f"Expected RGB-D prediction of shape {source.shape[1:]}, got {result.shape}")
+        result = self.model.generate(source, noise, cameras, num_steps=self.steps)
+        if self.autoencoder is not None:
+            result = self.autoencoder.decode(result)
+        result = result[0]
+        if result.shape != image_shape:
+            raise ValueError(f"Expected prediction of shape {image_shape}, got {result.shape}")
         return result.cpu()

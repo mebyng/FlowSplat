@@ -101,6 +101,7 @@ def make_prediction_callback(
     depth: torch.Tensor,
     source_pose: torch.Tensor,
     intrinsics: torch.Tensor,
+    fallback_depth: float = 2.0,
 ) -> Callable[[torch.Tensor], None]:
     """Capture the original RGB-D source and append each predicted target view."""
     # Keep this source and its pose fixed for every requested target view.
@@ -114,7 +115,9 @@ def make_prediction_callback(
                 original_rgbd, original_pose, target_pose, intrinsics
             )
             new_points, new_colors = depth_to_point_cloud(
-                prediction[:3], prediction[3], intrinsics, target_pose
+                prediction[:3],
+                prediction[3] if prediction.shape[0] == 4 else make_initial_depth(prediction, fallback_depth),
+                intrinsics, target_pose
             )
             valid = torch.isfinite(new_points).all(dim=1) & torch.isfinite(
                 new_colors
@@ -154,6 +157,11 @@ def main() -> None:
 
         predictor = ViewPredictor(args.run_name, args.logdir, args.device, args.steps)
         print(f"Loaded checkpoint: {predictor.checkpoint}")
+        if predictor.encoding_checkpoint is not None:
+            print(f"Loaded autoencoder checkpoint: {predictor.encoding_checkpoint}")
+        if predictor.channels == 3:
+            make_initial_depth(torch.empty(3, 1, 1), args.depth)
+            print(f"Generated RGB views will use temporary constant depth {args.depth}.")
 
     use_ground_truth_depth = args.depth_source in {"auto", "ground-truth"}
     dataset = ViewDataset(
@@ -194,7 +202,7 @@ def main() -> None:
 
     if predictor is not None:
         viewer.on_space = make_prediction_callback(
-            viewer, predictor, image, depth, source_pose, intrinsics
+            viewer, predictor, image, depth, source_pose, intrinsics, args.depth
         )
         print("Drag to orbit; press Space to generate and add a view.")
 

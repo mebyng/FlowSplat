@@ -115,7 +115,8 @@ def parse_args(argv=None):
         help="Append ground-truth depth as a fourth RGB-D channel for rotation/flow training.",
     )
     parser.add_argument(
-        "--teacher-run", help="Raw RGB or RGB-D flow run used for Gaussian supervision"
+        "--teacher-run",
+        help="Pixel or autoencoder-based flow run used for Gaussian supervision",
     )
     args = parser.parse_args(argv)
     if args.use_encoding and args.mode not in ("generate", "rotate"):
@@ -126,6 +127,8 @@ def parse_args(argv=None):
         parser.error("grad-clip must be nonnegative")
     if not 0 <= args.seed < 2**32 or not 0 <= args.validation_seed < 2**32:
         parser.error("seeds must be in [0, 2**32)")
+    if args.use_encoding and args.use_depth:
+        parser.error("--use-encoding and --use-depth are mutually exclusive")
     return args
 
 
@@ -173,7 +176,7 @@ def main():
             split="training",
             mode=args.mode,
             use_encoding=bool(args.use_encoding),
-            use_depth=args.use_depth,
+            use_depth=args.use_depth or (args.use_encoding and ae_use_depth),
         )
         val_dataset = ViewDataset(
             args.dataset_path,
@@ -181,7 +184,7 @@ def main():
             mode=args.mode,
             random_matching=False,
             use_encoding=bool(args.use_encoding),
-            use_depth=args.use_depth,
+            use_depth=args.use_depth or (args.use_encoding and ae_use_depth),
         )  # Use deterministic matching for validation
     if args.mode == "generate":
         channels = 4 if (args.use_encoding or args.use_depth) else 3
@@ -216,9 +219,15 @@ def main():
     elif args.mode == "gaussian":
         teacher, teacher_checkpoint = load_flow_teacher(args.teacher_run, args.logdir)
         expected_channels = 4 if args.use_depth else 3
-        if teacher.model.channels != expected_channels:
+        teacher_autoencoder = teacher.autoencoder
+        teacher_channels = (
+            teacher_autoencoder.channels
+            if teacher_autoencoder is not None
+            else teacher.model.channels
+        )
+        if teacher_channels != expected_channels:
             raise ValueError(
-                f"Teacher model has {teacher.model.channels} input channels, but expected {expected_channels} (use --use-depth to enable depth channel)"
+                f"Teacher requires {teacher_channels}-channel images, but expected {expected_channels} (use --use-depth for an RGB-D teacher)"
             )
         scene = GaussianScene(num_gaussians=512).cuda()
         model = GaussianModel(
@@ -283,6 +292,7 @@ def main():
                 "min_t": model.min_t,
                 "max_t": model.max_t,
                 "teacher_checkpoint": teacher_checkpoint,
+                "teacher_encoding_checkpoint": teacher.encoding_checkpoint,
             }
         )
     metadata.update(

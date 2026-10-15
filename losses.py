@@ -102,11 +102,12 @@ class FlowDistillationLoss(nn.Module):
     Jacobian. The scalar is a gradient surrogate, not reconstruction quality.
     """
 
-    def __init__(self, depth_weight=0.1):
+    def __init__(self, depth_weight=0.1, use_encoding=False):
         super().__init__()
         if depth_weight < 0:
             raise ValueError("depth_weight must be nonnegative")
         self.depth_weight = depth_weight
+        self.use_encoding = use_encoding
 
     def forward(self, image, noise, timestep, velocity):
         with torch.no_grad():
@@ -115,6 +116,14 @@ class FlowDistillationLoss(nn.Module):
                 raise ValueError("nonfinite distillation gradient")
             target = image - gradient
         residual = image - target
+        if self.use_encoding:
+            loss = 0.5 * residual.square().mean()
+            return loss, {
+                "distillation_latent": loss.detach(),
+                "distillation_gradient_rms": gradient.square().mean().sqrt(),
+                "timestep": timestep.detach().mean(),
+                "total": loss.detach(),
+            }
         rgb_loss = 0.5 * residual[:, :3].square().mean()
         loss = rgb_loss
         metrics = {
@@ -126,5 +135,5 @@ class FlowDistillationLoss(nn.Module):
             depth_loss = 0.5 * residual[:, 3:4].square().mean()
             loss = loss + self.depth_weight * depth_loss
             metrics["distillation_depth"] = depth_loss.detach()
-        metrics.update(total=loss.detach(), distillation=loss.detach())
+        metrics.update(total=loss.detach())
         return loss, metrics

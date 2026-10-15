@@ -163,9 +163,10 @@ class RegressionModel(Wrapper):
 class AutoEncoder(Wrapper):
     """Simple AutoEncoder model."""
 
-    def __init__(self, model: nn.Module):
+    def __init__(self, model: nn.Module, rgb_noise_weight=0.2):
         super().__init__(model)
         self.criterion = AutoEncoderLoss(self.device())
+        self.rgb_noise_weight = rgb_noise_weight
 
     def generate(
         self,
@@ -185,16 +186,38 @@ class AutoEncoder(Wrapper):
         cameras: dict[str, torch.Tensor],
     ):
         """Perform a single training step."""
+        if self.rgb_noise_weight > 0:
+            batch, _, height, width = source.shape
+            noise = torch.randn(
+                batch,
+                3,
+                min(8, height),
+                min(8, width),
+                device=source.device,
+                dtype=source.dtype,
+            )
+            noise = torch.nn.functional.interpolate(
+                noise, size=(height, width), mode="bilinear", align_corners=False
+            )
+            amplitude = self.rgb_noise_weight * torch.rand(
+                batch, 1, 1, 1, device=source.device, dtype=source.dtype
+            )
+            selected = torch.rand(batch, 1, 1, 1, device=source.device) < 0.5
+            source = source.clone()
+            source[:, :3] = (source[:, :3] + noise * amplitude * selected).clamp(0, 1)
+            # Reconstruct the corruption itself, preserving the original depth.
+            target = source
         pred = self.model(source)
         loss, loss_dict = self.criterion(pred, target)
         return loss, loss_dict
 
 
 class GaussianModel(Wrapper):
-    """Optimize one GaussianScene with a frozen pixel-space FlowModel teacher.
+    """Optimize one GaussianScene with a frozen pixel or latent FlowModel teacher.
 
     Source image/pose and target cameras are supplied per step. No target
-    images or teacher-generated views are used. Optimize self.model.parameters().
+    images are used. Latent teachers supply decoded one-step RGB targets.
+    Optimize self.model.parameters().
     """
 
     def __init__(
@@ -204,7 +227,10 @@ class GaussianModel(Wrapper):
         self.teacher = teacher.to(model.device()).eval().requires_grad_(False).eval()
         self.min_t, self.max_t = min_t, max_t
         self.use_depth = use_depth
-        self.criterion = FlowDistillationLoss(depth_weight=depth_weight)
+        self.criterion = FlowDistillationLoss(
+            depth_weight=depth_weight,
+            use_encoding=getattr(self.teacher, "autoencoder", None) is not None,
+        )
 
     def train(self, mode=True):
         self.model.train(mode)
@@ -236,6 +262,12 @@ class GaussianModel(Wrapper):
         image = rendered["rgb"]
         if self.use_depth:
             image = torch.cat([image, rendered["depth"]], dim=1)
+        autoencoder = getattr(self.teacher, "autoencoder", None)
+        if autoencoder is not None:
+            # Frozen encoder weights still propagate gradients to the rendered scene.
+            image = autoencoder.encode(image)
+            with torch.no_grad():
+                source = autoencoder.encode(source)
         batch_size = image.shape[0]
         noise = torch.randn_like(image)
         timestep = torch.rand(batch_size, 1, device=image.device, dtype=image.dtype)

@@ -161,6 +161,13 @@ Encoding generation writes one shared `encoding_metadata.json` containing
 
 ### Reproducible training and checkpoints
 
+AE training adds low-frequency RGB noise in `AutoEncoder.train_step`: an 8×8
+Gaussian field, upsampled with bilinear interpolation, with amplitude sampled
+from [0, 0.2] on half the images. Input and reconstruction target use the same
+corrupted image. RGB is clamped to [0, 1]; depth and validation remain unchanged.
+These settings are hardcoded in the wrapper for this experiment.
+
+
 Warmup increases the learning rate from 10% to 100% per batch over the initial
 warmup epochs. Cosine decay runs over the remaining epochs; step scheduling starts
 after warmup. With `--scheduler none`, warmup is followed by a constant learning
@@ -224,8 +231,12 @@ python -m viewer.view_dataset --gaussian-run scene_0
 Without a dataset, the viewer starts in splat mode; Tab shows the Gaussian centers
 as colored points. When a dataset path is supplied, its index defaults to 0.
 
-Prediction requires a `generate` or `rotate` run trained with `--use-depth` and
-without `--use-encoding`, plus its `metadata.json` and checkpoint. Inference supports
+Prediction requires a `generate` or `rotate` run trained with `--use-depth` or
+`--use-encoding`, plus its `metadata.json` and checkpoint. Latent runs load the
+exact autoencoder checkpoint recorded in `encoding_checkpoint` in the run metadata,
+encode the original source image, and decode the generated latent view. RGB-only
+autoencoders use `--depth` as constant depth for generated points; RGB-D autoencoders
+provide predicted depth. Inference supports
 `--device auto`, `cpu`, or `cuda`; `auto` selects CUDA when available.
 
 The default `--depth-source auto` currently requires saved ground-truth depth;
@@ -292,13 +303,24 @@ loss.backward()
 optimizer.step()
 ```
 
-The teacher must be an RGB `FlowModel` using the same pixel range, camera
+The teacher must be a pixel or latent `FlowModel` using the same pixel range, camera
 conventions, intrinsics and resolution as the source/render. It remains frozen
 and in evaluation mode. `CameraDataset` owns the fixed source image, source pose,
 and intrinsics, and includes them in each batch.
-No target images, generated views, or autoencoder are used. RGB-D teachers also
+No target images or generated views are used. Pixel RGB-D teachers also
 supervise expected z-depth through a separate distillation loss, weighted by 0.1.
 Depth is not multiplied or weighted by alpha. RGB teachers use only RGB loss.
+Latent teachers encode the source and rendered RGB or RGB-D image using their
+recorded frozen autoencoder. From the noisy latent and teacher velocity they
+estimate the clean latent as `z_t + (1-t)*velocity`, decode it, and fit rendered
+RGB to the detached decoded RGB target with MSE. This RGB loss is added with unit
+weight to the original latent distillation loss. The RGB term backpropagates
+directly through the renderer; the latent term also propagates through the frozen
+encoder through RGB. For latent RGB-D teachers, rendered depth is detached before
+encoding: it informs the teacher but receives no direct gradient or separate
+decoded-depth fitting loss. Both loss terms are logged. The diagnostic flag
+`--detach-rendered-depth` tests this behavior with known-target latent fitting.
+Teacher and autoencoder weights remain frozen and in evaluation mode.
 
 With `x_t = (1-t)*noise + t*render`, the teacher's implied noise is
 `x_t - t*v_teacher`. The injected gradient is its residual against sampled noise:
@@ -324,7 +346,9 @@ python main.py --mode gaussian --teacher-run rgb_flow \
 ```
 
 `--teacher-run` resolves under `<logdir>/generate/`, preferring final then latest
-epoch. Teacher metadata must identify a raw RGB or RGB-D AttentionAutoEncoder flow run.
+epoch. Teacher metadata must identify an AttentionAutoEncoder flow run. Latent
+teachers must record `encoding_checkpoint`; that exact autoencoder checkpoint
+is loaded automatically, without passing `--use-encoding` to Gaussian training.
 The dataset supplies only the chosen source image, pose, and intrinsics.
 Gaussian settings are fixed in `main.py`: the first training image, 512 Gaussians,
 camera radius 2.0, 128 training and 16 validation cameras per epoch, and time bounds
@@ -339,7 +363,7 @@ Gaussian training skips validation loss steps. A separate camera sampler supplie
 TensorBoard logs fixed-camera RGB, expected depth, opacity, and the source image.
 Only Gaussian parameters are optimized and saved as model weights; teacher weights
 are loaded separately. The teacher checkpoint path and Gaussian configuration are
-recorded in `metadata.json`.
+recorded in `metadata.json`, along with the autoencoder checkpoint for latent teachers.
 
 Resume with the same Gaussian configuration and teacher, plus
 `--resume-from scene_0 --run-name scene_0`. Distillation settings, optimizer and RNG

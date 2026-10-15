@@ -65,7 +65,7 @@ def load_encoding_model(run_name, logdir="runs", device="cuda"):
 
 
 def load_flow_teacher(run_name, logdir="runs", device="cuda"):
-    """Load a flow teacher"""
+    """Load a frozen pixel or latent flow teacher and its recorded autoencoder."""
 
     path = resolve_checkpoint_path(str(Path(logdir) / "generate"), run_name)
     checkpoint_path = Path(path)
@@ -74,14 +74,25 @@ def load_flow_teacher(run_name, logdir="runs", device="cuda"):
         run = run.parent
     metadata = json.loads((run / "metadata.json").read_text())
     use_depth = metadata.get("use_depth", False)
-    if metadata.get("mode") != "generate" or metadata.get("use_encoding"):
+    if metadata.get("mode") != "generate":
         raise ValueError(
-            "Gaussian supervision requires a raw RGB or RGB-D generate run"
+            "Gaussian supervision requires a generate run"
         )
     if metadata.get("model_name") != "AttentionAutoEncoder":
         raise ValueError("Unsupported teacher architecture")
     channels = 4 if use_depth else 3
+    autoencoder = None
+    encoding_checkpoint = None
+    if metadata.get("use_encoding"):
+        encoding_checkpoint = metadata.get("encoding_checkpoint")
+        if not encoding_checkpoint:
+            raise ValueError("Latent teacher metadata must record its encoding_checkpoint")
+        autoencoder, encoding_checkpoint = load_encoding_model(encoding_checkpoint, logdir, device)
+        channels = int(autoencoder.latent_dim.item())
     network = AttentionAutoEncoder(mode="flow", channels=channels, emb_channels=128)
     checkpoint = torch.load(path, map_location="cpu", weights_only=True)
     network.load_state_dict(checkpoint.get("model_state_dict", checkpoint))
-    return FlowModel(network).to(device).eval().requires_grad_(False), path
+    teacher = FlowModel(network)
+    teacher.autoencoder = autoencoder
+    teacher.encoding_checkpoint = encoding_checkpoint
+    return teacher.to(device).eval().requires_grad_(False), path
